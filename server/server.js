@@ -15,8 +15,7 @@ const { v4: uuidv4 } = require("uuid");
 // Services
 const { generateScript, getSearchKeywords } = require("./services/scriptGenerator");
 const { generateVideo } = require("./services/videoGenerator");
-const { generateTTS, VOICES } = require("./services/ttsService");
-const { searchPexelsVideos, downloadPexelsVideo, getSearchQueries } = require("./services/pexelsService");
+const { VOICES } = require("./services/ttsService");
 const { uploadVideo, isAuthenticated, revokeAuth } = require("./services/youtubeUploader");
 
 const app = express();
@@ -124,19 +123,8 @@ app.post("/api/generate", async (req, res) => {
   // Send jobId immediately so client can track progress
   res.json({ jobId, status: "processing" });
 
-  // Process in background
-  const emitProgress = (step, progress, message) => {
-    io.emit(`progress:${jobId}`, { step, progress, message });
-  };
-
   try {
-    const isReel = videoFormat !== "landscape";
-    const width = isReel ? 1080 : 1920;
-    const height = isReel ? 1920 : 1080;
-
-    // Step 1: Generate script
-    emitProgress("script", 10, "Generating script with AI...");
-
+    // Collect all Gemini API keys
     const allGeminiKeys = [];
     if (geminiKeys && Array.isArray(geminiKeys)) {
       allGeminiKeys.push(...geminiKeys.filter((k) => k && k.trim()));
@@ -144,88 +132,38 @@ app.post("/api/generate", async (req, res) => {
     const envKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
     allGeminiKeys.push(...envKeys);
 
-    const script = await generateScript(title, description || "", niche || "general", allGeminiKeys);
-    emitProgress("script", 20, `Script ready (Source: ${script.source})`);
+    const pexelsKey = pexelsApiKey || process.env.PEXELS_API_KEY || "";
 
-    // Step 2: Generate TTS audio
-    emitProgress("tts", 25, "Generating voiceover...");
-    const fullText = script.scenes.map((s) => s.narration).join(". ");
-    const audioPath = path.join(TEMP_DIR, `${jobId}_audio.mp3`);
-    const selectedVoice = voice || "en-US-ChristopherNeural";
-    const rate = voiceRate || "+0%";
-    const pitch = voicePitch || "+0Hz";
-    await generateTTS(fullText, audioPath, selectedVoice, rate, pitch);
-    emitProgress("tts", 40, "Voiceover generated!");
-
-    // Step 3: Fetch stock footage
-    emitProgress("footage", 45, "Searching stock footage...");
-    const pexelsKey = pexelsApiKey || process.env.PEXELS_API_KEY;
-    const searchQueries = getSearchQueries(title, niche);
-    let stockVideos = [];
-
-    if (pexelsKey) {
-      const orientation = isReel ? "portrait" : "landscape";
-      for (const query of searchQueries.slice(0, 3)) {
-        const results = await searchPexelsVideos(pexelsKey, query, 3, orientation);
-        stockVideos.push(...results);
-        if (stockVideos.length >= 5) break;
-      }
-    }
-    emitProgress("footage", 55, `Found ${stockVideos.length} stock clips`);
-
-    // Step 4: Download stock footage
-    const downloadedClips = [];
-    if (stockVideos.length > 0) {
-      emitProgress("download", 60, "Downloading stock footage...");
-      for (let i = 0; i < Math.min(stockVideos.length, script.scenes.length); i++) {
-        try {
-          const clipPath = path.join(TEMP_DIR, `${jobId}_clip_${i}.mp4`);
-          await downloadPexelsVideo(stockVideos[i], clipPath);
-          downloadedClips.push(clipPath);
-        } catch (err) {
-          console.error(`Failed to download clip ${i}:`, err.message);
-        }
-      }
-    }
-    emitProgress("download", 70, `Downloaded ${downloadedClips.length} clips`);
-
-    // Step 5: Generate video
-    emitProgress("render", 75, "Rendering video...");
-    const outputFileName = `${title.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 50)}_${jobId.substring(0, 8)}.mp4`;
-    const outputPath = path.join(OUTPUT_DIR, outputFileName);
-
-    await generateVideo({
-      script,
-      audioPath,
-      stockClips: downloadedClips,
-      outputPath,
-      width,
-      height,
+    // Delegate to videoGenerator which handles the full pipeline
+    const result = await generateVideo({
       title,
+      description: description || "",
+      niche: niche || "general",
       hashtags: hashtags || "",
+      videoFormat: videoFormat || "reel",
+      pexelsApiKey: pexelsKey,
+      geminiKeys: allGeminiKeys,
+      voice: voice || "en-US-ChristopherNeural",
+      voiceRate: voiceRate || "+0%",
+      voicePitch: voicePitch || "+0Hz",
+      onProgress: (message, progress) => {
+        io.emit(`progress:${jobId}`, { step: message, progress, message });
+      },
     });
 
-    emitProgress("render", 95, "Video rendered!");
-
-    // Step 6: Cleanup temp files
-    emitProgress("cleanup", 98, "Cleaning up...");
-    const tempFiles = [audioPath, ...downloadedClips];
-    for (const f of tempFiles) {
-      try { fs.unlinkSync(f); } catch {}
+    if (result.success) {
+      io.emit(`complete:${jobId}`, {
+        success: true,
+        videoUrl: `/output/${result.filename}`,
+        fileName: result.filename,
+        script: result.scriptData,
+      });
+    } else {
+      io.emit(`complete:${jobId}`, {
+        success: false,
+        error: result.error,
+      });
     }
-    // Clean other temp files for this job
-    const allTemp = fs.readdirSync(TEMP_DIR).filter((f) => f.startsWith(jobId));
-    allTemp.forEach((f) => {
-      try { fs.unlinkSync(path.join(TEMP_DIR, f)); } catch {}
-    });
-
-    emitProgress("done", 100, "Video ready!");
-    io.emit(`complete:${jobId}`, {
-      success: true,
-      videoUrl: `/output/${outputFileName}`,
-      fileName: outputFileName,
-      script,
-    });
   } catch (error) {
     console.error("Video generation error:", error);
     io.emit(`complete:${jobId}`, {

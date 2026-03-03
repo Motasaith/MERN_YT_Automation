@@ -28,6 +28,12 @@ const VOICES = {
  * edge-tts must be installed: pip install edge-tts
  */
 async function generateTTS(text, outputPath, voice = "en-US-ChristopherNeural", rate = "+0%", pitch = "+0Hz") {
+  // Validate text — edge-tts cannot generate audio for empty or whitespace-only input
+  const cleanedText = (text || "").replace(/[.\s]+/g, " ").trim();
+  if (!cleanedText || cleanedText.length < 2) {
+    throw new Error("TTS text is empty or contains no speakable content. Check script generation.");
+  }
+
   // Sanitize text for shell
   const sanitizedText = text
     .replace(/"/g, '\\"')
