@@ -304,7 +304,8 @@ function getSearchKeywords(niche, title) {
   };
 
   const extra = nicheKeywords[niche?.toLowerCase()] || ["creative", "abstract", "cinematic"];
-  const keywords = [niche, ...titleWords.slice(0, 3), ...sampleN(extra, 2)];
+  const shuffled = [...extra].sort(() => 0.5 - Math.random()).slice(0, 2);
+  const keywords = [niche, ...titleWords.slice(0, 3), ...shuffled];
   return [...new Set(keywords)];
 }
 
