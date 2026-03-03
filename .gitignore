@@ -1,0 +1,12 @@
+node_modules/
+.env
+dist/
+build/
+output/
+temp/
+youtube_token.json
+*.mp4
+*.mp3
+*.wav
+.DS_Store
+Thumbs.db
