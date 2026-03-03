@@ -1,35 +1,28 @@
 /**
- * Gemini AI Script Generator Service
- * Generates unique video scripts using Google Gemini API with multi-key rotation.
- * Retries aggressively with exponential backoff — no template fallback.
+ * AI Script Generator Service
+ * Primary: OpenRouter API (free models, highly available)
+ * Fallback: Google Gemini API (multi-key rotation)
+ * Retries aggressively with exponential backoff.
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const axios = require("axios");
 
 // Retry config
-const MAX_ROUNDS = 3;           // Full cycles through all keys
-const BASE_DELAY_MS = 2000;     // Starting delay between rounds
-const PER_KEY_DELAY_MS = 1000;  // Delay after a rate-limit hit on a single key
+const MAX_ROUNDS = 3;
+const BASE_DELAY_MS = 2000;
+const PER_KEY_DELAY_MS = 1000;
 
-class GeminiScriptWriter {
-  constructor(apiKeys = []) {
-    this.apiKeys = apiKeys.filter((k) => k && k.trim());
-    this.currentKeyIndex = 0;
-  }
+// OpenRouter free models to try (in priority order)
+const OPENROUTER_MODELS = [
+  "google/gemini-2.0-flash-exp:free",
+  "google/gemma-3-4b-it:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "mistralai/mistral-small-3.1-24b-instruct:free",
+];
 
-  _getNextKey() {
-    if (this.apiKeys.length === 0) return null;
-    const key = this.apiKeys[this.currentKeyIndex];
-    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-    return key;
-  }
-
-  async generate(title, description, niche, hashtags) {
-    if (this.apiKeys.length === 0) {
-      throw new Error("No Gemini API keys provided. Please add at least one key.");
-    }
-
-    const prompt = `You are a viral YouTube Shorts scriptwriter. Write a highly engaging, 
+function buildPrompt(title, description, niche, hashtags) {
+  return `You are a viral YouTube Shorts scriptwriter. Write a highly engaging, 
 60-second YouTube Short script about the following:
 
 Title: ${title}
@@ -54,7 +47,145 @@ POINT1: [first key point]
 POINT2: [second key point]  
 POINT3: [third key point]
 OUTRO: [call to action]`;
+}
 
+function parseScriptResponse(text, title, hashtags, source) {
+  const lines = text.trim().split("\n");
+  let hook = "";
+  const points = [];
+  let outro = "";
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const upper = trimmed.toUpperCase();
+
+    if (upper.startsWith("HOOK:")) {
+      hook = trimmed.split(":").slice(1).join(":").trim();
+    } else if (upper.startsWith("POINT1:") || upper.startsWith("POINT 1:")) {
+      points.push(trimmed.split(":").slice(1).join(":").trim());
+    } else if (upper.startsWith("POINT2:") || upper.startsWith("POINT 2:")) {
+      points.push(trimmed.split(":").slice(1).join(":").trim());
+    } else if (upper.startsWith("POINT3:") || upper.startsWith("POINT 3:")) {
+      points.push(trimmed.split(":").slice(1).join(":").trim());
+    } else if (upper.startsWith("OUTRO:")) {
+      outro = trimmed.split(":").slice(1).join(":").trim();
+    }
+  }
+
+  // Fallback if parsing fails — split by sentences
+  if (!hook && points.length === 0) {
+    const chunks = text
+      .split(".")
+      .map((c) => c.trim())
+      .filter((c) => c);
+    hook = chunks[0] || title;
+    points.push(...chunks.slice(1, 4));
+    outro = chunks[chunks.length - 1] || "Follow for more!";
+  }
+
+  const scenes = [
+    { text: title, duration: 3, type: "title" },
+    { text: hook, duration: 4, type: "intro" },
+    ...points.map((p) => ({ text: p, duration: 7, type: "body" })),
+    { text: outro, duration: 4, type: "outro" },
+  ];
+  if (hashtags) {
+    scenes.push({ text: hashtags, duration: 3, type: "hashtags" });
+  }
+
+  return {
+    title,
+    fullScript: `${hook} ${points.join(" ")} ${outro}`,
+    intro: hook,
+    body: points,
+    outro,
+    scenes,
+    source,
+  };
+}
+
+// ─────────────────────────────────────────────
+// OpenRouter (Primary)
+// ─────────────────────────────────────────────
+async function generateWithOpenRouter(apiKey, title, description, niche, hashtags) {
+  const prompt = buildPrompt(title, description, niche, hashtags);
+  const errors = [];
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    for (const model of OPENROUTER_MODELS) {
+      try {
+        console.log(`OpenRouter round ${round + 1}/${MAX_ROUNDS} — model: ${model}`);
+        const response = await axios.post(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 1024,
+            temperature: 0.9,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": "https://youtube-automation-studio.local",
+              "X-Title": "YouTube Automation Studio",
+            },
+            timeout: 30000,
+          }
+        );
+
+        const text = response.data?.choices?.[0]?.message?.content;
+        if (text && text.trim().length > 20) {
+          console.log(`OpenRouter succeeded with ${model} on round ${round + 1}`);
+          return parseScriptResponse(text, title, hashtags, `openrouter/${model.split("/").pop()}`);
+        }
+        console.log(`OpenRouter ${model}: empty/short response`);
+      } catch (err) {
+        const status = err.response?.status;
+        const msg = err.response?.data?.error?.message || err.message;
+        console.log(`OpenRouter ${model} failed: [${status}] ${msg}`);
+        errors.push(`${model}: ${msg}`);
+
+        // Rate limited — wait before trying next model
+        if (status === 429) {
+          await new Promise((r) => setTimeout(r, PER_KEY_DELAY_MS));
+        }
+      }
+    }
+
+    // Backoff between rounds
+    if (round < MAX_ROUNDS - 1) {
+      const delay = BASE_DELAY_MS * Math.pow(2, round);
+      console.log(`OpenRouter: all models failed round ${round + 1}. Retrying in ${delay / 1000}s...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  console.log(`OpenRouter exhausted after ${MAX_ROUNDS} rounds.`);
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// Gemini (Fallback)
+// ─────────────────────────────────────────────
+class GeminiScriptWriter {
+  constructor(apiKeys = []) {
+    this.apiKeys = apiKeys.filter((k) => k && k.trim());
+    this.currentKeyIndex = 0;
+  }
+
+  _getNextKey() {
+    if (this.apiKeys.length === 0) return null;
+    const key = this.apiKeys[this.currentKeyIndex];
+    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+    return key;
+  }
+
+  async generate(title, description, niche, hashtags) {
+    if (this.apiKeys.length === 0) return null;
+
+    const prompt = buildPrompt(title, description, niche, hashtags);
     const errors = [];
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -71,13 +202,13 @@ OUTRO: [call to action]`;
 
           if (text && text.trim().length > 20) {
             console.log(`Gemini succeeded with ${keyLabel} on round ${round + 1}`);
-            return this._parseResponse(text, title, hashtags);
+            return parseScriptResponse(text, title, hashtags, "gemini");
           }
-          console.log(`${keyLabel}: empty/short response, trying next...`);
+          console.log(`Gemini ${keyLabel}: empty/short response`);
         } catch (err) {
           const errMsg = err.message?.toLowerCase() || "";
-          console.log(`${keyLabel} failed: ${err.message}`);
-          errors.push(`${keyLabel} round ${round + 1}: ${err.message}`);
+          console.log(`Gemini ${keyLabel} failed: ${err.message}`);
+          errors.push(`${keyLabel}: ${err.message}`);
 
           if (
             errMsg.includes("429") ||
@@ -90,93 +221,59 @@ OUTRO: [call to action]`;
         }
       }
 
-      // Wait with exponential backoff before next round
       if (round < MAX_ROUNDS - 1) {
         const delay = BASE_DELAY_MS * Math.pow(2, round);
-        console.log(`All keys failed round ${round + 1}. Retrying in ${delay / 1000}s...`);
+        console.log(`Gemini: all keys failed round ${round + 1}. Retrying in ${delay / 1000}s...`);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
 
-    throw new Error(
-      `Gemini script generation failed after ${MAX_ROUNDS} rounds across ${this.apiKeys.length} key(s). ` +
-      `Last errors: ${errors.slice(-3).join(" | ")}`
-    );
-  }
-
-  _parseResponse(text, title, hashtags) {
-    const lines = text.trim().split("\n");
-    let hook = "";
-    const points = [];
-    let outro = "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const upper = trimmed.toUpperCase();
-
-      if (upper.startsWith("HOOK:")) {
-        hook = trimmed.split(":").slice(1).join(":").trim();
-      } else if (upper.startsWith("POINT1:") || upper.startsWith("POINT 1:")) {
-        points.push(trimmed.split(":").slice(1).join(":").trim());
-      } else if (upper.startsWith("POINT2:") || upper.startsWith("POINT 2:")) {
-        points.push(trimmed.split(":").slice(1).join(":").trim());
-      } else if (upper.startsWith("POINT3:") || upper.startsWith("POINT 3:")) {
-        points.push(trimmed.split(":").slice(1).join(":").trim());
-      } else if (upper.startsWith("OUTRO:")) {
-        outro = trimmed.split(":").slice(1).join(":").trim();
-      }
-    }
-
-    // Fallback if parsing fails
-    if (!hook && points.length === 0) {
-      const chunks = text
-        .split(".")
-        .map((c) => c.trim())
-        .filter((c) => c);
-      hook = chunks[0] || title;
-      points.push(...chunks.slice(1, 4));
-      outro = chunks[chunks.length - 1] || "Follow for more!";
-    }
-
-    const scenes = [
-      { text: title, duration: 3, type: "title" },
-      { text: hook, duration: 4, type: "intro" },
-      ...points.map((p) => ({ text: p, duration: 7, type: "body" })),
-      { text: outro, duration: 4, type: "outro" },
-    ];
-    if (hashtags) {
-      scenes.push({ text: hashtags, duration: 3, type: "hashtags" });
-    }
-
-    return {
-      title,
-      fullScript: `${hook} ${points.join(" ")} ${outro}`,
-      intro: hook,
-      body: points,
-      outro,
-      scenes,
-      source: "gemini",
-    };
+    console.log(`Gemini exhausted after ${MAX_ROUNDS} rounds.`);
+    return null;
   }
 }
 
-function sampleN(arr, n) {
-  const shuffled = [...arr].sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, Math.min(n, arr.length));
-}
+// ─────────────────────────────────────────────
+// Main entry point
+// ─────────────────────────────────────────────
 
 /**
- * Main script generation function.
- * Uses Gemini AI only — retries aggressively, throws on failure.
+ * Generate a script. Tries OpenRouter first, then Gemini.
+ * Throws if both fail.
  */
 async function generateScript(title, description, niche, hashtags, geminiKeys = []) {
-  if (!geminiKeys || geminiKeys.filter((k) => k && k.trim()).length === 0) {
-    throw new Error("No Gemini API keys provided. Please add at least one Gemini key to generate a script.");
+  const openRouterKey = process.env.OPENROUTER_API_KEY || "";
+
+  // Try OpenRouter first (most reliable)
+  if (openRouterKey) {
+    console.log("Trying OpenRouter (primary)...");
+    const result = await generateWithOpenRouter(openRouterKey, title, description, niche, hashtags);
+    if (result) return result;
+    console.log("OpenRouter failed, trying Gemini fallback...");
   }
 
-  const writer = new GeminiScriptWriter(geminiKeys);
-  return await writer.generate(title, description, niche, hashtags);
+  // Try Gemini as fallback
+  const validGeminiKeys = (geminiKeys || []).filter((k) => k && k.trim());
+  if (validGeminiKeys.length > 0) {
+    console.log("Trying Gemini (fallback)...");
+    const writer = new GeminiScriptWriter(validGeminiKeys);
+    const result = await writer.generate(title, description, niche, hashtags);
+    if (result) return result;
+  }
+
+  // Both failed
+  const providers = [];
+  if (openRouterKey) providers.push("OpenRouter");
+  if (validGeminiKeys.length > 0) providers.push("Gemini");
+
+  if (providers.length === 0) {
+    throw new Error("No AI API keys configured. Add an OpenRouter key in .env or Gemini keys in the UI.");
+  }
+
+  throw new Error(
+    `Script generation failed on all providers (${providers.join(", ")}). ` +
+    `All models/keys are rate-limited or unavailable. Please try again in a minute.`
+  );
 }
 
 /**
