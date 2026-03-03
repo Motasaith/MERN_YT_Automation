@@ -1,10 +1,15 @@
 /**
  * Gemini AI Script Generator Service
  * Generates unique video scripts using Google Gemini API with multi-key rotation.
- * Falls back to enhanced templates when no keys are available.
+ * Retries aggressively with exponential backoff — no template fallback.
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+// Retry config
+const MAX_ROUNDS = 3;           // Full cycles through all keys
+const BASE_DELAY_MS = 2000;     // Starting delay between rounds
+const PER_KEY_DELAY_MS = 1000;  // Delay after a rate-limit hit on a single key
 
 class GeminiScriptWriter {
   constructor(apiKeys = []) {
@@ -20,7 +25,9 @@ class GeminiScriptWriter {
   }
 
   async generate(title, description, niche, hashtags) {
-    if (this.apiKeys.length === 0) return null;
+    if (this.apiKeys.length === 0) {
+      throw new Error("No Gemini API keys provided. Please add at least one key.");
+    }
 
     const prompt = `You are a viral YouTube Shorts scriptwriter. Write a highly engaging, 
 60-second YouTube Short script about the following:
@@ -48,33 +55,53 @@ POINT2: [second key point]
 POINT3: [third key point]
 OUTRO: [call to action]`;
 
-    for (let attempt = 0; attempt < this.apiKeys.length; attempt++) {
-      const key = this._getNextKey();
-      try {
-        const genAI = new GoogleGenerativeAI(key);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-        const result = await model.generateContent(prompt);
-        const text = result.response.text();
+    const errors = [];
 
-        if (text) {
-          return this._parseResponse(text, title, hashtags);
-        }
-      } catch (err) {
-        const errMsg = err.message?.toLowerCase() || "";
-        console.log(`Gemini key #${this.currentKeyIndex} failed: ${err.message}`);
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      console.log(`Gemini attempt round ${round + 1}/${MAX_ROUNDS}...`);
 
-        if (
-          errMsg.includes("429") ||
-          errMsg.includes("quota") ||
-          errMsg.includes("rate")
-        ) {
-          await new Promise((r) => setTimeout(r, 1000));
-          continue;
+      for (let i = 0; i < this.apiKeys.length; i++) {
+        const key = this._getNextKey();
+        const keyLabel = `Key #${((this.currentKeyIndex - 1 + this.apiKeys.length) % this.apiKeys.length) + 1}`;
+        try {
+          const genAI = new GoogleGenerativeAI(key);
+          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+          const result = await model.generateContent(prompt);
+          const text = result.response.text();
+
+          if (text && text.trim().length > 20) {
+            console.log(`Gemini succeeded with ${keyLabel} on round ${round + 1}`);
+            return this._parseResponse(text, title, hashtags);
+          }
+          console.log(`${keyLabel}: empty/short response, trying next...`);
+        } catch (err) {
+          const errMsg = err.message?.toLowerCase() || "";
+          console.log(`${keyLabel} failed: ${err.message}`);
+          errors.push(`${keyLabel} round ${round + 1}: ${err.message}`);
+
+          if (
+            errMsg.includes("429") ||
+            errMsg.includes("quota") ||
+            errMsg.includes("rate") ||
+            errMsg.includes("resource_exhausted")
+          ) {
+            await new Promise((r) => setTimeout(r, PER_KEY_DELAY_MS));
+          }
         }
-        continue;
+      }
+
+      // Wait with exponential backoff before next round
+      if (round < MAX_ROUNDS - 1) {
+        const delay = BASE_DELAY_MS * Math.pow(2, round);
+        console.log(`All keys failed round ${round + 1}. Retrying in ${delay / 1000}s...`);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
-    return null;
+
+    throw new Error(
+      `Gemini script generation failed after ${MAX_ROUNDS} rounds across ${this.apiKeys.length} key(s). ` +
+      `Last errors: ${errors.slice(-3).join(" | ")}`
+    );
   }
 
   _parseResponse(text, title, hashtags) {
@@ -134,219 +161,22 @@ OUTRO: [call to action]`;
   }
 }
 
-// ========================
-// Enhanced Template Fallback
-// ========================
-
-const NICHE_TEMPLATES = {
-  motivation: {
-    hooks: [
-      "Stop scrolling. This one habit separates the top 1% from everyone else.",
-      "You're not lazy. You've just been using the wrong strategy.",
-      "What if everything you thought about success... was completely wrong?",
-      "In the next 60 seconds, I'm going to change how you think about discipline.",
-      "Most people will ignore this. But the ones who don't? They win.",
-    ],
-    points: [
-      "First... your environment shapes you more than your willpower ever will. Change your space, change your life.",
-      "The most successful people don't rely on motivation. They build systems. Tiny habits, every single day.",
-      "Here's the truth nobody talks about... failure isn't the opposite of success. It's the price of it.",
-      "You don't need to be perfect. You need to be consistent. Show up even when you don't feel like it.",
-      "Stop comparing your chapter 1 to someone else's chapter 20. Your timeline is yours.",
-      "Write down your goals every morning. Not because you'll forget them... but because your brain needs to see them.",
-      "The pain of discipline weighs ounces. The pain of regret? That weighs tons.",
-      "Surround yourself with people who challenge you, not people who just agree with you.",
-    ],
-    outros: [
-      "Start today. Not tomorrow. Today. Follow for your daily dose of motivation.",
-      "Share this with someone who needs to hear it right now.",
-      "Your future self is counting on you. Don't let them down. Follow for more.",
-      "Like this if it hit different. Subscribe for daily motivation.",
-    ],
-  },
-  tech: {
-    hooks: [
-      "This new technology is about to make your phone feel ancient.",
-      "99% of people don't know this tech trick. Here's what the pros use.",
-      "The future just arrived... and it's not what you expected.",
-      "I tested this for 30 days and the results were genuinely shocking.",
-      "This free tool does what people are paying hundreds of dollars for.",
-    ],
-    points: [
-      "This uses AI in a way we've never seen before. It learns your patterns and adapts in real time.",
-      "The processing power needed for this used to fill an entire room. Now it fits in your pocket.",
-      "What makes this different is the architecture. It's not just faster... it's fundamentally smarter.",
-      "Companies are spending billions on this right now. And the free version is already incredible.",
-      "The open-source community cracked this months before the big companies did. That's the beauty of open source.",
-      "This works offline too. No internet, no cloud, no subscriptions. Just pure local power.",
-    ],
-    outros: [
-      "The future waits for no one. Follow to stay ahead of the curve.",
-      "Drop a comment if you want a full tutorial on this.",
-      "Subscribe. I post tech that actually matters, not just hype.",
-      "Save this for later. You're going to need it.",
-    ],
-  },
-  finance: {
-    hooks: [
-      "I wish someone told me this about money when I was 18.",
-      "The rich don't budget. Here's what they actually do instead.",
-      "This money rule is simple, boring, and it works every single time.",
-      "You're losing money every month and you don't even know it.",
-      "Here's why your savings account is actually making you poorer.",
-    ],
-    points: [
-      "The 50-30-20 rule changed everything for me. 50% needs, 30% wants, 20% invest. Simple but powerful.",
-      "Stop trying to time the market. Consistent investing over time beats guessing every single time.",
-      "Your first $100,000 is the hardest. After that compound interest does the heavy lifting for you.",
-      "Track every dollar for 30 days. Not to restrict yourself... but to see where your money actually goes.",
-      "Multiple income streams isn't about working more. It's about building assets that work while you sleep.",
-      "Automate your finances. If you have to think about saving, you won't do it consistently.",
-    ],
-    outros: [
-      "Financial freedom isn't a dream. It's a math problem. Follow for the solutions.",
-      "Save this video. Come back in a year and thank yourself.",
-      "Tag someone who needs to hear this. It could change their life.",
-      "Follow for daily money tips that actually work.",
-    ],
-  },
-  health: {
-    hooks: [
-      "This one change to my morning routine fixed everything.",
-      "Doctors won't tell you this... but your phone is ruining your sleep.",
-      "I tried the world's simplest workout for 90 days. The results speak for themselves.",
-    ],
-    points: [
-      "Walking 10,000 steps isn't just a trend. Studies show it reduces anxiety by 40%.",
-      "Cold showers for 30 seconds in the morning activate your nervous system better than any cup of coffee.",
-      "Sleep is the ultimate performance hack. Just one bad night drops your cognitive ability by 30%.",
-      "Gut health controls everything... your mood, your energy, even your skin. Feed it fiber, not junk.",
-      "Eating protein in the morning stops cravings all day.",
-      "Screen time before bed destroys your melatonin production.",
-    ],
-    outros: [
-      "Your health is your wealth. Start with one change today. Follow for more.",
-      "Save this. Screenshot it. Make it happen.",
-      "Follow for health tips that are actually backed by science.",
-    ],
-  },
-  education: {
-    hooks: [
-      "The education system didn't teach you this... but it might be the most important skill you ever learn.",
-      "I memorized an entire textbook in one weekend. Here's the technique.",
-      "Why do you forget 90% of what you read? Here's the science... and the fix.",
-    ],
-    points: [
-      "Active recall. Close the book and try to remember. That struggle is where learning happens.",
-      "The Feynman Technique: explain it like you're teaching a 5-year-old. If you can't simplify it, you don't understand it.",
-      "Spaced repetition beats cramming every time. Review at intervals: 1 day, 3 days, 7 days, 30 days.",
-      "Your brain learns better in 25-minute focused blocks with 5-minute breaks. The Pomodoro Technique.",
-      "Teaching others is the fastest way to master anything.",
-      "Handwriting notes activates more brain regions than typing.",
-    ],
-    outros: [
-      "Knowledge is the one thing nobody can take from you. Follow for more learning hacks.",
-      "Save this for your next study session.",
-      "Subscribe for study tips that actually work in the real world.",
-    ],
-  },
-  gaming: {
-    hooks: [
-      "This trick will instantly boost your K/D ratio. Most players have no idea.",
-      "I found a setting that 99% of gamers have turned off. Big mistake.",
-      "Pro gamers warm up for 30 minutes before every match. Here's their exact routine.",
-    ],
-    points: [
-      "Crosshair placement is everything. Always keep it at head level.",
-      "Lower your sensitivity. Precision beats speed in every competitive game.",
-      "Review your replays. Every death is a lesson.",
-      "Take breaks every hour. Fatigue tanks your reaction time.",
-      "Audio is an underrated advantage. Good headphones let you hear everything others miss.",
-      "Communication wins team games. Callouts and positivity carry harder than raw aim.",
-    ],
-    outros: [
-      "GG. Now go apply this and watch your rank climb. Follow for more tips.",
-      "Drop your current rank in the comments.",
-      "Subscribe for daily gaming content that actually makes you better.",
-    ],
-  },
-  default: {
-    hooks: [
-      "This changed my entire perspective. And it'll change yours too.",
-      "I learned this the hard way so you don't have to.",
-      "Stop what you're doing. You need to hear this.",
-    ],
-    points: [
-      "The difference between knowing and doing is everything.",
-      "Consistency beats talent when talent doesn't show up consistently.",
-      "Small improvements compound. 1% better every day means 37 times better in a year.",
-      "Overthinking is the killer of progress. Done is better than perfect.",
-      "Everything you want is on the other side of fear.",
-      "The ones who succeed aren't special. They just refused to quit.",
-    ],
-    outros: [
-      "Follow for more content that actually makes a difference.",
-      "Don't just watch this... apply it. That's where the magic happens.",
-      "Subscribe. I don't waste your time with fluff.",
-    ],
-  },
-};
-
-function pickRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 function sampleN(arr, n) {
   const shuffled = [...arr].sort(() => 0.5 - Math.random());
   return shuffled.slice(0, Math.min(n, arr.length));
 }
 
-function generateFromTemplates(title, description, niche, hashtags) {
-  const templates = NICHE_TEMPLATES[niche?.toLowerCase()] || NICHE_TEMPLATES.default;
-
-  const hook = pickRandom(templates.hooks);
-  const bodyParts = sampleN(templates.points, 3);
-  const outro = pickRandom(templates.outros);
-
-  const scenes = [
-    { text: title, duration: 3, type: "title" },
-    { text: hook, duration: 4, type: "intro" },
-    ...bodyParts.map((p) => ({ text: p, duration: 7, type: "body" })),
-    { text: outro, duration: 4, type: "outro" },
-  ];
-  if (hashtags) {
-    scenes.push({ text: hashtags, duration: 3, type: "hashtags" });
-  }
-
-  return {
-    title,
-    description,
-    niche,
-    hashtags,
-    fullScript: `${hook} ${bodyParts.join(" ")} ${outro}`,
-    intro: hook,
-    body: bodyParts,
-    outro,
-    scenes,
-    source: "template",
-  };
-}
-
 /**
  * Main script generation function.
- * Tries Gemini first, falls back to templates.
+ * Uses Gemini AI only — retries aggressively, throws on failure.
  */
 async function generateScript(title, description, niche, hashtags, geminiKeys = []) {
-  // Try Gemini AI first
-  if (geminiKeys && geminiKeys.length > 0) {
-    const writer = new GeminiScriptWriter(geminiKeys);
-    const result = await writer.generate(title, description, niche, hashtags);
-    if (result) return result;
-    console.log("All Gemini keys failed, falling back to templates...");
+  if (!geminiKeys || geminiKeys.filter((k) => k && k.trim()).length === 0) {
+    throw new Error("No Gemini API keys provided. Please add at least one Gemini key to generate a script.");
   }
 
-  // Fallback to templates
-  return generateFromTemplates(title, description, niche, hashtags);
+  const writer = new GeminiScriptWriter(geminiKeys);
+  return await writer.generate(title, description, niche, hashtags);
 }
 
 /**
@@ -385,5 +215,4 @@ module.exports = {
   generateScript,
   getSearchKeywords,
   GeminiScriptWriter,
-  NICHE_TEMPLATES,
 };
