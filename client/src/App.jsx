@@ -25,8 +25,6 @@ function App() {
     voiceRate: 0,
     voicePitch: 0,
   })
-  const [geminiKeys, setGeminiKeys] = useState(['', '', '', '', ''])
-  const [pexelsApiKey, setPexelsApiKey] = useState('')
   const [youtubeCredentials, setYoutubeCredentials] = useState({
     clientId: '',
     clientSecret: '',
@@ -98,14 +96,6 @@ function App() {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  const handleGeminiKeyChange = (index, value) => {
-    setGeminiKeys(prev => {
-      const updated = [...prev]
-      updated[index] = value
-      return updated
-    })
-  }
-
   const handleGenerateVideo = async () => {
     if (!formData.title.trim()) {
       toast.warning('Please enter a video title')
@@ -122,11 +112,9 @@ function App() {
 
       const res = await axios.post(`${API_BASE}/api/generate`, {
         ...formData,
-        geminiKeys: geminiKeys.filter(k => k.trim()),
         voice: voiceSettings.voice,
         voiceRate: rate,
         voicePitch: pitch,
-        pexelsApiKey,
       })
 
       setCurrentJobId(res.data.jobId)
@@ -148,7 +136,6 @@ function App() {
         title: formData.title,
         description: formData.description,
         niche: formData.niche,
-        geminiKeys: geminiKeys.filter(k => k.trim()),
       })
       setScriptPreview(res.data.script)
       toast.success(`Script generated via ${res.data.script.source}`)
@@ -196,8 +183,6 @@ function App() {
       toast.error('Delete failed')
     }
   }
-
-  const activeGeminiKeys = geminiKeys.filter(k => k.trim()).length
 
   const NICHES = [
     'technology', 'motivation', 'education', 'fitness', 'cooking',
@@ -350,35 +335,6 @@ function App() {
               </div>
             </div>
 
-            {/* Gemini Keys */}
-            <div className="card" style={{ marginBottom: 24 }}>
-              <div className="card-title">
-                <Key size={20} />
-                Gemini API Keys
-                {activeGeminiKeys > 0 && (
-                  <span className="badge badge-success">{activeGeminiKeys} active</span>
-                )}
-              </div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginBottom: 12 }}>
-                Add up to 5 Google Gemini API keys for AI script generation. If one fails, the next is used automatically.
-              </p>
-              <div className="api-keys-grid">
-                {geminiKeys.map((key, i) => (
-                  <div className="key-input-wrapper" key={i}>
-                    <input
-                      className="form-input"
-                      type="password"
-                      placeholder={`Gemini Key ${i + 1}`}
-                      value={key}
-                      onChange={e => handleGeminiKeyChange(i, e.target.value)}
-                      style={{ paddingRight: 32 }}
-                    />
-                    <div className={`key-status ${key.trim() ? 'active' : 'empty'}`} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
             {/* Action Buttons */}
             <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
               <button
@@ -426,15 +382,15 @@ function App() {
                 <div className="card-title">
                   <FileText size={20} />
                   Script Preview
-                  <span className={`badge ${scriptPreview.source === 'gemini' ? 'badge-gemini' : 'badge-template'}`}>
-                    {scriptPreview.source === 'gemini' ? '✨ Gemini AI' : '📝 Template'}
+                  <span className={`badge badge-gemini`}>
+                    ✨ {scriptPreview.source || 'AI'}
                   </span>
                 </div>
                 <div className="script-preview">
                   {scriptPreview.scenes?.map((scene, i) => (
                     <div className="script-scene" key={i}>
-                      <div className="script-scene-title">{scene.title || `Scene ${i + 1}`}</div>
-                      <div>{scene.narration}</div>
+                      <div className="script-scene-title">{scene.type?.toUpperCase() || `Scene ${i + 1}`}</div>
+                      <div>{scene.text}</div>
                     </div>
                   ))}
                 </div>
@@ -529,20 +485,36 @@ function App() {
       {activeTab === 'settings' && (
         <div className="main-grid">
           <div>
-            {/* Pexels API Key */}
+            {/* API Keys Setup Guide */}
             <div className="card" style={{ marginBottom: 24 }}>
-              <div className="card-title"><Film size={20} /> Pexels API Key</div>
+              <div className="card-title"><Key size={20} /> API Keys Setup</div>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginBottom: 12 }}>
-                Get a free API key from <a href="https://www.pexels.com/api/" target="_blank" style={{ color: 'var(--accent)' }}>pexels.com/api</a> for stock footage backgrounds.
+                API keys are configured in the server's <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>.env</code> file for security. No keys needed in the UI.
               </p>
-              <div className="form-group">
-                <input
-                  className="form-input"
-                  type="password"
-                  placeholder="Enter Pexels API Key"
-                  value={pexelsApiKey}
-                  onChange={e => setPexelsApiKey(e.target.value)}
-                />
+              <div style={{ lineHeight: 2, color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                <div style={{ marginBottom: 8 }}>
+                  <strong style={{ color: 'var(--accent)' }}>Pexels API Key</strong> (stock footage)
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: 8 }}>
+                    1. Go to <a href="https://www.pexels.com/api/" target="_blank" style={{ color: 'var(--accent)' }}>pexels.com/api</a> and sign up for free<br/>
+                    2. Copy your API key<br/>
+                    3. Add to <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>server/.env</code>: <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>PEXELS_API_KEY=your_key_here</code>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <strong style={{ color: 'var(--accent)' }}>OpenRouter API Key</strong> (AI script generation)
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: 8 }}>
+                    1. Go to <a href="https://openrouter.ai/keys" target="_blank" style={{ color: 'var(--accent)' }}>openrouter.ai/keys</a> and create a free key<br/>
+                    2. Copy your API key<br/>
+                    3. Add to <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>server/.env</code>: <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>OPENROUTER_API_KEY=your_key_here</code>
+                  </div>
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--accent)' }}>Gemini API Keys</strong> (fallback, optional)
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: 8 }}>
+                    1. Go to <a href="https://aistudio.google.com/apikey" target="_blank" style={{ color: 'var(--accent)' }}>aistudio.google.com/apikey</a><br/>
+                    2. Add comma-separated keys to <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>server/.env</code>: <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>GEMINI_API_KEYS=key1,key2</code>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -593,7 +565,7 @@ function App() {
               <div className="card-title"><Sparkles size={20} /> How It Works</div>
               <div style={{ lineHeight: 2, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                 <div><strong style={{ color: 'var(--accent)' }}>1.</strong> Enter your video title, description, and niche</div>
-                <div><strong style={{ color: 'var(--accent)' }}>2.</strong> AI generates a unique script (Gemini) or uses smart templates</div>
+                <div><strong style={{ color: 'var(--accent)' }}>2.</strong> AI generates a unique script via OpenRouter / Gemini</div>
                 <div><strong style={{ color: 'var(--accent)' }}>3.</strong> Neural voice (Edge TTS) creates natural-sounding narration</div>
                 <div><strong style={{ color: 'var(--accent)' }}>4.</strong> Stock footage from Pexels adds visual depth</div>
                 <div><strong style={{ color: 'var(--accent)' }}>5.</strong> FFmpeg renders the final video with text overlays</div>
@@ -601,8 +573,9 @@ function App() {
               </div>
               <div style={{ marginTop: 20, padding: 16, background: 'var(--bg-input)', borderRadius: 10, fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                 <strong style={{ color: 'var(--warning)' }}>Free Tier Limits:</strong><br />
+                • OpenRouter: Free models unlimited*<br />
                 • Pexels: 200 requests/month<br />
-                • Gemini: 15 requests/min (per key)<br />
+                • Gemini (fallback): 15 req/min per key<br />
                 • YouTube: ~6 uploads/day<br />
                 • Edge TTS: Unlimited
               </div>

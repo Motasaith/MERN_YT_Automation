@@ -80,18 +80,13 @@ app.post("/api/youtube/revoke", (req, res) => {
  */
 app.post("/api/script/preview", async (req, res) => {
   try {
-    const { title, description, niche, geminiKeys } = req.body;
+    const { title, description, niche } = req.body;
 
     if (!title) return res.status(400).json({ error: "Title is required" });
 
-    const allKeys = [];
-    if (geminiKeys && Array.isArray(geminiKeys)) {
-      allKeys.push(...geminiKeys.filter((k) => k && k.trim()));
-    }
-    const envKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
-    allKeys.push(...envKeys);
+    const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
 
-    const script = await generateScript(title, description || "", niche || "general", allKeys);
+    const script = await generateScript(title, description || "", niche || "general", "", geminiKeys);
     res.json({ script });
   } catch (error) {
     console.error("Script preview error:", error);
@@ -110,11 +105,9 @@ app.post("/api/generate", async (req, res) => {
     description,
     niche,
     hashtags,
-    geminiKeys,
     voice,
     voiceRate,
     voicePitch,
-    pexelsApiKey,
     videoFormat, // "reel" or "landscape"
   } = req.body;
 
@@ -124,15 +117,9 @@ app.post("/api/generate", async (req, res) => {
   res.json({ jobId, status: "processing" });
 
   try {
-    // Collect all Gemini API keys
-    const allGeminiKeys = [];
-    if (geminiKeys && Array.isArray(geminiKeys)) {
-      allGeminiKeys.push(...geminiKeys.filter((k) => k && k.trim()));
-    }
-    const envKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
-    allGeminiKeys.push(...envKeys);
-
-    const pexelsKey = pexelsApiKey || process.env.PEXELS_API_KEY || "";
+    // Read keys from environment
+    const allGeminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
+    const pexelsKey = process.env.PEXELS_API_KEY || "";
 
     // Delegate to videoGenerator which handles the full pipeline
     const result = await generateVideo({

@@ -31,23 +31,39 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
   const outputPath = path.join(TEMP_DIR, `scene_${index}_${uuidv4()}.mp4`);
   const duration = scene.duration || 5;
 
+  // Word-wrap text to fit screen width (~30 chars/line at body size on 1080px)
+  const charsPerLine = scene.type === 'title' ? 22 : 28;
+  const wrappedText = scene.text
+    .split(' ')
+    .reduce((lines, word) => {
+      const last = lines[lines.length - 1];
+      if (last && (last + ' ' + word).length <= charsPerLine) {
+        lines[lines.length - 1] = last + ' ' + word;
+      } else {
+        lines.push(word);
+      }
+      return lines;
+    }, [])
+    .join('\n');
+
   // Escape text for FFmpeg drawtext filter
-  const escapedText = scene.text
+  const escapedText = wrappedText
     .replace(/\\/g, "\\\\\\\\")
     .replace(/'/g, "'\\\\\\''")
     .replace(/:/g, "\\\\:")
     .replace(/\[/g, "\\\\[")
-    .replace(/\]/g, "\\\\]");
+    .replace(/\]/g, "\\\\]")
+    .replace(/\n/g, "\\\\n");
 
-  // Font size based on scene type
+  // Font size based on scene type (sized for 1080 width shorts)
   const fontSizes = {
-    title: 54,
-    intro: 40,
-    body: 36,
-    outro: 40,
-    hashtags: 28,
+    title: 44,
+    intro: 34,
+    body: 30,
+    outro: 34,
+    hashtags: 24,
   };
-  const fontSize = fontSizes[scene.type] || 36;
+  const fontSize = fontSizes[scene.type] || 30;
 
   // Background color gradient based on scene type
   const bgColors = {
@@ -61,6 +77,25 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
   return new Promise((resolve, reject) => {
     const command = ffmpeg();
 
+    // Subtitle positioning: bottom area with text wrapping
+    // x centered, y at 80% of height (bottom area), with word wrap via drawtext's text_w limit
+    const maxTextWidth = Math.floor(width * 0.85);
+    const yPos = scene.type === 'title' ? `(h*0.45)` : `(h*0.78)`;
+    const boxPad = 14;
+    const drawtextFilter = [
+      `drawtext=text='${escapedText}'`,
+      `fontsize=${fontSize}`,
+      `fontcolor=white`,
+      `borderw=3`,
+      `bordercolor=black@0.7`,
+      `x=(w-text_w)/2`,
+      `y=${yPos}`,
+      `line_spacing=12`,
+      `box=1`,
+      `boxcolor=black@0.45`,
+      `boxborderw=${boxPad}`,
+    ].join(':');
+
     if (bgVideoPath && fs.existsSync(bgVideoPath)) {
       // Use stock video as background
       command
@@ -68,7 +103,7 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
         .inputOptions([`-t ${duration}`, "-stream_loop -1"])
         .complexFilter([
           `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[bg]`,
-          `[bg]drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10,fade=t=in:st=0:d=0.5,fade=t=out:st=${duration - 0.5}:d=0.5[v]`,
+          `[bg]${drawtextFilter},fade=t=in:st=0:d=0.5,fade=t=out:st=${duration - 0.5}:d=0.5[v]`,
         ])
         .outputOptions([
           "-map [v]",
@@ -85,7 +120,7 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
         .input(`color=c=${bgColor}:s=${width}x${height}:d=${duration}:r=24`)
         .inputOptions(["-f lavfi"])
         .complexFilter([
-          `[0:v]drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10,fade=t=in:st=0:d=0.5,fade=t=out:st=${duration - 0.5}:d=0.5[v]`,
+          `[0:v]${drawtextFilter},fade=t=in:st=0:d=0.5,fade=t=out:st=${duration - 0.5}:d=0.5[v]`,
         ])
         .outputOptions([
           "-map [v]",

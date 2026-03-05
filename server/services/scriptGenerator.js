@@ -21,32 +21,34 @@ const OPENROUTER_MODELS = [
   "mistralai/mistral-small-3.1-24b-instruct:free",
 ];
 
-function buildPrompt(title, description, niche, hashtags) {
-  return `You are a viral YouTube Shorts scriptwriter. Write a highly engaging, 
-60-second YouTube Short script about the following:
+function buildPrompt(title) {
+  return `You are a top-tier viral YouTube Shorts scriptwriter. Your job is to write an incredibly engaging 60-second script based ONLY on this video title:
 
-Title: ${title}
-Niche: ${niche}
-Description: ${description}
-Hashtags: ${hashtags}
+"${title}"
+
+Your script must sound EXACTLY like the title suggests — if the title says "3 AI Tools That Are Writing Your Code", you must actually talk about 3 specific real AI tools that write code. If the title mentions "5 habits", give 5 real habits. MATCH THE TITLE PRECISELY.
 
 RULES:
-- Start with a powerful 3-second HOOK that stops the scroll (question, bold claim, or shocking stat)
-- Follow with 3 rapid-fire points (each 10-15 seconds)  
-- End with a strong call-to-action outro (5 seconds)
-- Use conversational, energetic tone — like talking to a friend
-- Vary sentence length: short punchy lines mixed with flowing ones
-- Include natural pauses (indicated by "...")
-- Total script should be speakable in ~50-60 seconds
-- Do NOT use emojis or stage directions
-- Do NOT include timestamps
+- HOOK (3 seconds): A scroll-stopping opening line. Bold claim, shocking stat, or provocative question directly about the title topic.
+- POINT1 (12-15 seconds): First major point. Be SPECIFIC — use real names, real numbers, real examples. No generic filler.
+- POINT2 (12-15 seconds): Second major point. Different angle, equally specific and valuable.
+- POINT3 (12-15 seconds): Third major point. End strong with the most surprising or valuable insight.
+- OUTRO (5 seconds): Short punchy call-to-action that ties back to the title.
 
-OUTPUT FORMAT (use these exact labels):
-HOOK: [your hook line]
-POINT1: [first key point]
-POINT2: [second key point]  
-POINT3: [third key point]
-OUTRO: [call to action]`;
+STYLE:
+- Conversational and energetic, like explaining to a smart friend
+- Mix short punchy sentences with longer flowing ones
+- Use "..." for dramatic pauses
+- Be ultra-specific: real tool names, real stats, real techniques
+- NO emojis, NO stage directions, NO timestamps, NO hashtags
+- Total script must be naturally speakable in 50-60 seconds
+
+OUTPUT FORMAT (use these EXACT labels on separate lines):
+HOOK: [hook text]
+POINT1: [point 1 text]
+POINT2: [point 2 text]
+POINT3: [point 3 text]
+OUTRO: [outro text]`;
 }
 
 function parseScriptResponse(text, title, hashtags, source) {
@@ -109,7 +111,7 @@ function parseScriptResponse(text, title, hashtags, source) {
 // OpenRouter (Primary)
 // ─────────────────────────────────────────────
 async function generateWithOpenRouter(apiKey, title, description, niche, hashtags) {
-  const prompt = buildPrompt(title, description, niche, hashtags);
+  const prompt = buildPrompt(title);
   const errors = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -185,7 +187,7 @@ class GeminiScriptWriter {
   async generate(title, description, niche, hashtags) {
     if (this.apiKeys.length === 0) return null;
 
-    const prompt = buildPrompt(title, description, niche, hashtags);
+    const prompt = buildPrompt(title);
     const errors = [];
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
