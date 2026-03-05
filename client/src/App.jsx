@@ -19,6 +19,7 @@ function App() {
     niche: 'technology',
     hashtags: '',
     videoFormat: 'reel',
+    videoDuration: 'medium',
   })
   const [voiceSettings, setVoiceSettings] = useState({
     voice: 'en-US-ChristopherNeural',
@@ -136,6 +137,7 @@ function App() {
         title: formData.title,
         description: formData.description,
         niche: formData.niche,
+        videoDuration: formData.videoDuration,
       })
       setScriptPreview(res.data.script)
       toast.success(`Script generated via ${res.data.script.source}`)
@@ -270,14 +272,28 @@ function App() {
                 </div>
               </div>
 
-              <div className="form-group">
-                <label>Hashtags</label>
-                <input
-                  className="form-input"
-                  placeholder="#ai #technology #2025 #viral"
-                  value={formData.hashtags}
-                  onChange={e => handleInputChange('hashtags', e.target.value)}
-                />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="form-group">
+                  <label>Video Duration</label>
+                  <select
+                    className="form-select"
+                    value={formData.videoDuration}
+                    onChange={e => handleInputChange('videoDuration', e.target.value)}
+                  >
+                    <option value="short">Short (~30s)</option>
+                    <option value="medium">Medium (~60s)</option>
+                    <option value="long">Long (~2 min)</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Hashtags</label>
+                  <input
+                    className="form-input"
+                    placeholder="#ai #technology #2025 #viral"
+                    value={formData.hashtags}
+                    onChange={e => handleInputChange('hashtags', e.target.value)}
+                  />
+                </div>
               </div>
             </div>
 

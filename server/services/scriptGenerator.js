@@ -21,19 +21,48 @@ const OPENROUTER_MODELS = [
   "mistralai/mistral-small-3.1-24b-instruct:free",
 ];
 
-function buildPrompt(title) {
-  return `You are a top-tier viral YouTube Shorts scriptwriter. Your job is to write an incredibly engaging 60-second script based ONLY on this video title:
+/**
+ * Detect how many points the title implies (e.g. "5 Most Powerful AI" → 5).
+ * Defaults to 3 if no number found.
+ */
+function detectPointCount(title) {
+  const match = title.match(/\b(\d{1,2})\b/);
+  const n = match ? parseInt(match[1], 10) : 3;
+  return Math.max(2, Math.min(n, 10)); // clamp 2–10
+}
+
+/** Duration presets: target speaking time in seconds */
+const DURATION_PRESETS = {
+  short:  { total: 30,  hookSec: 3,  pointSec: 5,   outroSec: 4  },
+  medium: { total: 60,  hookSec: 4,  pointSec: 12,  outroSec: 5  },
+  long:   { total: 120, hookSec: 5,  pointSec: 20,  outroSec: 8  },
+};
+
+function buildPrompt(title, videoDuration = "medium") {
+  const pointCount = detectPointCount(title);
+  const preset = DURATION_PRESETS[videoDuration] || DURATION_PRESETS.medium;
+
+  // Build the POINT labels dynamically
+  const pointRules = Array.from({ length: pointCount }, (_, i) => {
+    const n = i + 1;
+    return `- POINT${n} (~${preset.pointSec} seconds): Point #${n}. Be SPECIFIC — use real names, real numbers, real examples. No generic filler.`;
+  }).join("\n");
+
+  const pointLabels = Array.from({ length: pointCount }, (_, i) => {
+    return `POINT${i + 1}: [point ${i + 1} text]\nSEARCH${i + 1}: [2-3 word Pexels search query for this point's background footage]`;
+  }).join("\n");
+
+  return `You are a top-tier viral YouTube scriptwriter. Write an engaging ~${preset.total}-second script based ONLY on this video title:
 
 "${title}"
 
-Your script must sound EXACTLY like the title suggests — if the title says "3 AI Tools That Are Writing Your Code", you must actually talk about 3 specific real AI tools that write code. If the title mentions "5 habits", give 5 real habits. MATCH THE TITLE PRECISELY.
+CRITICAL: The title implies ${pointCount} distinct points/items. You MUST provide exactly ${pointCount} points. If the title says "5 AI tools", list 5 real tools. If it says "7 habits", give 7 real habits. MATCH THE TITLE NUMBER PRECISELY.
 
 RULES:
-- HOOK (3 seconds): A scroll-stopping opening line. Bold claim, shocking stat, or provocative question directly about the title topic.
-- POINT1 (12-15 seconds): First major point. Be SPECIFIC — use real names, real numbers, real examples. No generic filler.
-- POINT2 (12-15 seconds): Second major point. Different angle, equally specific and valuable.
-- POINT3 (12-15 seconds): Third major point. End strong with the most surprising or valuable insight.
-- OUTRO (5 seconds): Short punchy call-to-action that ties back to the title.
+- HOOK (~${preset.hookSec} seconds): A scroll-stopping opening line. Bold claim, shocking stat, or provocative question.
+${pointRules}
+- OUTRO (~${preset.outroSec} seconds): Short punchy call-to-action that ties back to the title.
+- Each POINT must also have a SEARCH line: 2-3 words describing the best stock footage for that point (e.g. "robot coding", "person typing laptop", "server room lights").
 
 STYLE:
 - Conversational and energetic, like explaining to a smart friend
@@ -41,21 +70,23 @@ STYLE:
 - Use "..." for dramatic pauses
 - Be ultra-specific: real tool names, real stats, real techniques
 - NO emojis, NO stage directions, NO timestamps, NO hashtags
-- Total script must be naturally speakable in 50-60 seconds
+- Total script must be naturally speakable in ~${preset.total} seconds
 
 OUTPUT FORMAT (use these EXACT labels on separate lines):
 HOOK: [hook text]
-POINT1: [point 1 text]
-POINT2: [point 2 text]
-POINT3: [point 3 text]
-OUTRO: [outro text]`;
+SEARCH_HOOK: [2-3 word search query for hook footage]
+${pointLabels}
+OUTRO: [outro text]
+SEARCH_OUTRO: [2-3 word search query for outro footage]`;
 }
 
-function parseScriptResponse(text, title, hashtags, source) {
+function parseScriptResponse(text, title, hashtags, source, videoDuration = "medium") {
+  const preset = DURATION_PRESETS[videoDuration] || DURATION_PRESETS.medium;
   const lines = text.trim().split("\n");
   let hook = "";
   const points = [];
   let outro = "";
+  const searchKeywords = {}; // scene index → search query
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -64,14 +95,17 @@ function parseScriptResponse(text, title, hashtags, source) {
 
     if (upper.startsWith("HOOK:")) {
       hook = trimmed.split(":").slice(1).join(":").trim();
-    } else if (upper.startsWith("POINT1:") || upper.startsWith("POINT 1:")) {
-      points.push(trimmed.split(":").slice(1).join(":").trim());
-    } else if (upper.startsWith("POINT2:") || upper.startsWith("POINT 2:")) {
-      points.push(trimmed.split(":").slice(1).join(":").trim());
-    } else if (upper.startsWith("POINT3:") || upper.startsWith("POINT 3:")) {
+    } else if (/^POINT\s?\d+:/i.test(upper)) {
       points.push(trimmed.split(":").slice(1).join(":").trim());
     } else if (upper.startsWith("OUTRO:")) {
       outro = trimmed.split(":").slice(1).join(":").trim();
+    } else if (/^SEARCH_HOOK:/i.test(upper)) {
+      searchKeywords["hook"] = trimmed.split(":").slice(1).join(":").trim();
+    } else if (/^SEARCH\s?\d+:/i.test(upper)) {
+      const idx = parseInt(upper.match(/\d+/)[0], 10);
+      searchKeywords[`point${idx}`] = trimmed.split(":").slice(1).join(":").trim();
+    } else if (/^SEARCH_OUTRO:/i.test(upper)) {
+      searchKeywords["outro"] = trimmed.split(":").slice(1).join(":").trim();
     }
   }
 
@@ -87,13 +121,18 @@ function parseScriptResponse(text, title, hashtags, source) {
   }
 
   const scenes = [
-    { text: title, duration: 3, type: "title" },
-    { text: hook, duration: 4, type: "intro" },
-    ...points.map((p) => ({ text: p, duration: 7, type: "body" })),
-    { text: outro, duration: 4, type: "outro" },
+    { text: title, duration: 3, type: "title", searchQuery: title },
+    { text: hook, duration: preset.hookSec, type: "intro", searchQuery: searchKeywords["hook"] || "" },
+    ...points.map((p, i) => ({
+      text: p,
+      duration: preset.pointSec,
+      type: "body",
+      searchQuery: searchKeywords[`point${i + 1}`] || "",
+    })),
+    { text: outro, duration: preset.outroSec, type: "outro", searchQuery: searchKeywords["outro"] || "" },
   ];
   if (hashtags) {
-    scenes.push({ text: hashtags, duration: 3, type: "hashtags" });
+    scenes.push({ text: hashtags, duration: 3, type: "hashtags", searchQuery: "" });
   }
 
   return {
@@ -110,8 +149,8 @@ function parseScriptResponse(text, title, hashtags, source) {
 // ─────────────────────────────────────────────
 // OpenRouter (Primary)
 // ─────────────────────────────────────────────
-async function generateWithOpenRouter(apiKey, title, description, niche, hashtags) {
-  const prompt = buildPrompt(title);
+async function generateWithOpenRouter(apiKey, title, description, niche, hashtags, videoDuration = "medium") {
+  const prompt = buildPrompt(title, videoDuration);
   const errors = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -140,7 +179,7 @@ async function generateWithOpenRouter(apiKey, title, description, niche, hashtag
         const text = response.data?.choices?.[0]?.message?.content;
         if (text && text.trim().length > 20) {
           console.log(`OpenRouter succeeded with ${model} on round ${round + 1}`);
-          return parseScriptResponse(text, title, hashtags, `openrouter/${model.split("/").pop()}`);
+          return parseScriptResponse(text, title, hashtags, `openrouter/${model.split("/").pop()}`, videoDuration);
         }
         console.log(`OpenRouter ${model}: empty/short response`);
       } catch (err) {
@@ -184,10 +223,10 @@ class GeminiScriptWriter {
     return key;
   }
 
-  async generate(title, description, niche, hashtags) {
+  async generate(title, description, niche, hashtags, videoDuration = "medium") {
     if (this.apiKeys.length === 0) return null;
 
-    const prompt = buildPrompt(title);
+    const prompt = buildPrompt(title, videoDuration);
     const errors = [];
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -204,7 +243,7 @@ class GeminiScriptWriter {
 
           if (text && text.trim().length > 20) {
             console.log(`Gemini succeeded with ${keyLabel} on round ${round + 1}`);
-            return parseScriptResponse(text, title, hashtags, "gemini");
+            return parseScriptResponse(text, title, hashtags, "gemini", videoDuration);
           }
           console.log(`Gemini ${keyLabel}: empty/short response`);
         } catch (err) {
@@ -243,13 +282,13 @@ class GeminiScriptWriter {
  * Generate a script. Tries OpenRouter first, then Gemini.
  * Throws if both fail.
  */
-async function generateScript(title, description, niche, hashtags, geminiKeys = []) {
+async function generateScript(title, description, niche, hashtags, geminiKeys = [], videoDuration = "medium") {
   const openRouterKey = process.env.OPENROUTER_API_KEY || "";
 
   // Try OpenRouter first (most reliable)
   if (openRouterKey) {
     console.log("Trying OpenRouter (primary)...");
-    const result = await generateWithOpenRouter(openRouterKey, title, description, niche, hashtags);
+    const result = await generateWithOpenRouter(openRouterKey, title, description, niche, hashtags, videoDuration);
     if (result) return result;
     console.log("OpenRouter failed, trying Gemini fallback...");
   }
@@ -259,7 +298,7 @@ async function generateScript(title, description, niche, hashtags, geminiKeys = 
   if (validGeminiKeys.length > 0) {
     console.log("Trying Gemini (fallback)...");
     const writer = new GeminiScriptWriter(validGeminiKeys);
-    const result = await writer.generate(title, description, niche, hashtags);
+    const result = await writer.generate(title, description, niche, hashtags, videoDuration);
     if (result) return result;
   }
 

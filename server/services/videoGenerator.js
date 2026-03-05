@@ -198,6 +198,7 @@ async function generateVideo({
   niche,
   hashtags,
   videoFormat = "reel",
+  videoDuration = "medium",
   pexelsApiKey = "",
   geminiKeys = [],
   voice = "en-US-ChristopherNeural",
@@ -213,7 +214,7 @@ async function generateVideo({
   try {
     // Step 1: Generate script
     onProgress("Generating script...", 5);
-    const scriptData = await generateScript(title, description, niche, hashtags, geminiKeys);
+    const scriptData = await generateScript(title, description, niche, hashtags, geminiKeys, videoDuration);
     const { scenes } = scriptData;
     onProgress(`Script generated via ${scriptData.source.toUpperCase()}`, 10);
 
@@ -223,23 +224,30 @@ async function generateVideo({
     await generateTTS(scriptData.fullScript, ttsPath, voice, voiceRate, voicePitch);
     onProgress("Voiceover complete", 25);
 
-    // Step 3: Fetch stock footage
+    // Step 3: Fetch stock footage (scene-specific queries)
     let stockVideoPaths = [];
     if (pexelsApiKey) {
       onProgress("Fetching stock footage from Pexels...", 30);
-      const keywords = getSearchKeywords(niche, title);
 
-      for (const keyword of keywords.slice(0, 4)) {
-        if (stockVideoPaths.length >= scenes.length) break;
-        const videos = await searchPexelsVideos(pexelsApiKey, keyword, 2, orientation);
+      for (let i = 0; i < scenes.length; i++) {
+        const scene = scenes[i];
+        // Use AI-generated search query, fallback to generic keywords
+        const query = scene.searchQuery || getSearchKeywords(niche, title)[0] || niche || "cinematic";
+        if (!query) continue;
 
-        for (const vid of videos) {
-          if (stockVideoPaths.length >= scenes.length) break;
-          const dlPath = path.join(TEMP_DIR, `stock_${stockVideoPaths.length}_${jobId}.mp4`);
-          const downloaded = await downloadPexelsVideo(vid, dlPath);
-          if (downloaded) stockVideoPaths.push(downloaded);
+        try {
+          const videos = await searchPexelsVideos(pexelsApiKey, query, 2, orientation);
+          if (videos.length > 0) {
+            const dlPath = path.join(TEMP_DIR, `stock_${i}_${jobId}.mp4`);
+            const downloaded = await downloadPexelsVideo(videos[0], dlPath);
+            if (downloaded) {
+              stockVideoPaths[i] = downloaded;
+            }
+          }
+        } catch (err) {
+          console.log(`Pexels fetch failed for scene ${i} ("${query}"): ${err.message}`);
         }
-        onProgress(`Downloaded ${stockVideoPaths.length} stock clips...`, 30 + stockVideoPaths.length * 3);
+        onProgress(`Fetching footage ${i + 1}/${scenes.length}...`, 30 + Math.floor((i / scenes.length) * 20));
       }
     }
 
@@ -247,7 +255,7 @@ async function generateVideo({
     onProgress("Composing video scenes...", 55);
     const sceneClips = [];
     for (let i = 0; i < scenes.length; i++) {
-      const bgVideo = i < stockVideoPaths.length ? stockVideoPaths[i] : null;
+      const bgVideo = stockVideoPaths[i] || null;
       const clipPath = await createSceneClip(scenes[i], i, width, height, bgVideo);
       sceneClips.push(clipPath);
       onProgress(`Scene ${i + 1}/${scenes.length} created`, 55 + Math.floor((i / scenes.length) * 25));
@@ -266,7 +274,7 @@ async function generateVideo({
 
     // Cleanup temp files
     onProgress("Cleaning up...", 95);
-    const tempFiles = [ttsPath, concatPath, ...sceneClips, ...stockVideoPaths];
+    const tempFiles = [ttsPath, concatPath, ...sceneClips, ...stockVideoPaths.filter(Boolean)];
     for (const f of tempFiles) {
       try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
     }

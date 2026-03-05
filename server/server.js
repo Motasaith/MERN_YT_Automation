@@ -80,13 +80,13 @@ app.post("/api/youtube/revoke", (req, res) => {
  */
 app.post("/api/script/preview", async (req, res) => {
   try {
-    const { title, description, niche } = req.body;
+    const { title, description, niche, videoDuration } = req.body;
 
     if (!title) return res.status(400).json({ error: "Title is required" });
 
     const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
 
-    const script = await generateScript(title, description || "", niche || "general", "", geminiKeys);
+    const script = await generateScript(title, description || "", niche || "general", "", geminiKeys, videoDuration || "medium");
     res.json({ script });
   } catch (error) {
     console.error("Script preview error:", error);
@@ -109,6 +109,7 @@ app.post("/api/generate", async (req, res) => {
     voiceRate,
     voicePitch,
     videoFormat, // "reel" or "landscape"
+    videoDuration, // "short", "medium", "long"
   } = req.body;
 
   if (!title) return res.status(400).json({ error: "Title is required" });
@@ -128,6 +129,7 @@ app.post("/api/generate", async (req, res) => {
       niche: niche || "general",
       hashtags: hashtags || "",
       videoFormat: videoFormat || "reel",
+      videoDuration: videoDuration || "medium",
       pexelsApiKey: pexelsKey,
       geminiKeys: allGeminiKeys,
       voice: voice || "en-US-ChristopherNeural",
