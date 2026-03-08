@@ -13,12 +13,11 @@ const MAX_ROUNDS = 3;
 const BASE_DELAY_MS = 2000;
 const PER_KEY_DELAY_MS = 1000;
 
-// OpenRouter free models to try (in priority order)
+// Paid models via OpenRouter (~$0.001 or less per script)
 const OPENROUTER_MODELS = [
-  "google/gemini-2.0-flash-exp:free",
-  "google/gemma-3-4b-it:free",
-  "meta-llama/llama-3.1-8b-instruct:free",
-  "mistralai/mistral-small-3.1-24b-instruct:free",
+  "deepseek/deepseek-chat",           // ~$0.0003/script, excellent writer
+  "google/gemini-2.0-flash-001",      // ~$0.0001/script, fast & reliable
+  "openai/gpt-4o-mini",               // ~$0.0005/script, very good quality
 ];
 
 /**
@@ -153,57 +152,48 @@ async function generateWithOpenRouter(apiKey, title, description, niche, hashtag
   const prompt = buildPrompt(title, videoDuration);
   const errors = [];
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    for (const model of OPENROUTER_MODELS) {
-      try {
-        console.log(`OpenRouter round ${round + 1}/${MAX_ROUNDS} — model: ${model}`);
-        const response = await axios.post(
-          "https://openrouter.ai/api/v1/chat/completions",
-          {
-            model,
-            messages: [{ role: "user", content: prompt }],
-            max_tokens: 1024,
-            temperature: 0.9,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-              "HTTP-Referer": "https://youtube-automation-studio.local",
-              "X-Title": "YouTube Automation Studio",
-            },
-            timeout: 30000,
-          }
-        );
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "HTTP-Referer": "https://youtube-automation-studio.local",
+    "X-Title": "YouTube Automation Studio",
+  };
 
-        const text = response.data?.choices?.[0]?.message?.content;
-        if (text && text.trim().length > 20) {
-          console.log(`OpenRouter succeeded with ${model} on round ${round + 1}`);
-          return parseScriptResponse(text, title, hashtags, `openrouter/${model.split("/").pop()}`, videoDuration);
-        }
-        console.log(`OpenRouter ${model}: empty/short response`);
-      } catch (err) {
-        const status = err.response?.status;
-        const msg = err.response?.data?.error?.message || err.message;
-        console.log(`OpenRouter ${model} failed: [${status}] ${msg}`);
-        errors.push(`${model}: ${msg}`);
-
-        // Rate limited — wait before trying next model
-        if (status === 429) {
-          await new Promise((r) => setTimeout(r, PER_KEY_DELAY_MS));
-        }
-      }
+  async function tryModel(model) {
+    console.log(`OpenRouter trying model: ${model}`);
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 2048,
+        temperature: 0.9,
+      },
+      { headers, timeout: 45000 }
+    );
+    const text = response.data?.choices?.[0]?.message?.content;
+    if (text && text.trim().length > 20) {
+      console.log(`OpenRouter succeeded with ${model}`);
+      return parseScriptResponse(text, title, hashtags, `openrouter/${model.split("/").pop()}`, videoDuration);
     }
+    return null;
+  }
 
-    // Backoff between rounds
-    if (round < MAX_ROUNDS - 1) {
-      const delay = BASE_DELAY_MS * Math.pow(2, round);
-      console.log(`OpenRouter: all models failed round ${round + 1}. Retrying in ${delay / 1000}s...`);
-      await new Promise((r) => setTimeout(r, delay));
+  // Try each model once
+  for (const model of OPENROUTER_MODELS) {
+    try {
+      const result = await tryModel(model);
+      if (result) return result;
+    } catch (err) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error?.message || err.message;
+      console.log(`  ${model} failed: [${status}] ${msg}`);
+      errors.push(`${model}: ${msg}`);
+      if (status === 429) await new Promise((r) => setTimeout(r, PER_KEY_DELAY_MS));
     }
   }
 
-  console.log(`OpenRouter exhausted after ${MAX_ROUNDS} rounds.`);
+  console.log("OpenRouter: all models exhausted.");
   return null;
 }
 

@@ -20,6 +20,7 @@ function App() {
     hashtags: '',
     videoFormat: 'reel',
     videoDuration: 'medium',
+    videoSource: 'pexels',
   })
   const [voiceSettings, setVoiceSettings] = useState({
     voice: 'en-US-ChristopherNeural',
@@ -32,6 +33,7 @@ function App() {
   })
 
   const [voices, setVoices] = useState({})
+  const [aiProviders, setAiProviders] = useState([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [progress, setProgress] = useState({ step: '', progress: 0, message: '' })
   const [currentJobId, setCurrentJobId] = useState(null)
@@ -48,6 +50,11 @@ function App() {
     // Fetch voices
     axios.get(`${API_BASE}/api/voices`).then(res => {
       setVoices(res.data.voices || {})
+    }).catch(() => {})
+
+    // Fetch AI video providers
+    axios.get(`${API_BASE}/api/ai-providers`).then(res => {
+      setAiProviders(res.data.providers || [])
     }).catch(() => {})
 
     // Fetch existing videos
@@ -297,6 +304,57 @@ function App() {
               </div>
             </div>
 
+            {/* Video Source Toggle */}
+            <div className="card" style={{ marginBottom: 24 }}>
+              <div className="card-title"><Film size={20} /> Video Source</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div
+                  onClick={() => handleInputChange('videoSource', 'pexels')}
+                  style={{
+                    padding: '16px 12px',
+                    borderRadius: 10,
+                    border: `2px solid ${formData.videoSource === 'pexels' ? 'var(--accent)' : 'var(--border)'}`,
+                    background: formData.videoSource === 'pexels' ? 'rgba(99, 102, 241, 0.1)' : 'var(--bg-input)',
+                    cursor: 'pointer',
+                    textAlign: 'center',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <div style={{ fontSize: '1.5rem', marginBottom: 6 }}>📷</div>
+                  <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Stock Footage</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>Pexels (200 req/mo)</div>
+                </div>
+                <div
+                  onClick={() => handleInputChange('videoSource', 'ai')}
+                  style={{
+                    padding: '16px 12px',
+                    borderRadius: 10,
+                    border: `2px solid ${formData.videoSource === 'ai' ? 'var(--accent)' : 'var(--border)'}`,
+                    background: formData.videoSource === 'ai' ? 'rgba(99, 102, 241, 0.1)' : 'var(--bg-input)',
+                    cursor: 'pointer',
+                    textAlign: 'center',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <div style={{ fontSize: '1.5rem', marginBottom: 6 }}>🤖</div>
+                  <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>AI Generated</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                    {aiProviders.length > 0 ? aiProviders[0] + (aiProviders.length > 1 ? ` +${aiProviders.length - 1} more` : '') : 'Not configured'}
+                  </div>
+                </div>
+              </div>
+              {formData.videoSource === 'ai' && aiProviders.length > 0 && (
+                <div style={{ marginTop: 10, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Fallback chain: {aiProviders.join(' → ')}
+                </div>
+              )}
+              {formData.videoSource === 'ai' && aiProviders.length === 0 && (
+                <div style={{ marginTop: 10, fontSize: '0.75rem', color: 'var(--warning)' }}>
+                  No AI video providers configured. Add keys in server/.env
+                </div>
+              )}
+            </div>
+
             {/* Voice Settings */}
             <div className="card" style={{ marginBottom: 24 }}>
               <div className="card-title"><Mic size={20} /> Voice Settings</div>
@@ -531,6 +589,20 @@ function App() {
                     2. Add comma-separated keys to <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>server/.env</code>: <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>GEMINI_API_KEYS=key1,key2</code>
                   </div>
                 </div>
+                <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '12px 0' }} />
+                <div style={{ marginBottom: 4 }}>
+                  <strong style={{ color: 'var(--accent)' }}>AI Video Generation</strong> (optional, for AI-generated clips)
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: 8 }}>
+                  Add any combination to <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4 }}>server/.env</code>:<br/>
+                  <code style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4, display: 'inline-block', marginTop: 4, lineHeight: 1.8 }}>
+                    KLING_ACCESS_KEY=...<br/>
+                    KLING_SECRET_KEY=...<br/>
+                    PIXVERSE_API_KEY=...<br/>
+                    STABILITY_API_KEY=...<br/>
+                    HF_ACCESS_TOKEN=...
+                  </code>
+                </div>
               </div>
             </div>
 
@@ -591,7 +663,10 @@ function App() {
                 <strong style={{ color: 'var(--warning)' }}>Free Tier Limits:</strong><br />
                 • OpenRouter: Free models unlimited*<br />
                 • Pexels: 200 requests/month<br />
-                • Gemini (fallback): 15 req/min per key<br />
+                • Kling AI: 66 clips/day (free)<br />
+                • Pixverse: Free tier available<br />
+                • Stability AI: 25 credits/day<br />
+                • HuggingFace: Unlimited (slow)<br />
                 • YouTube: ~6 uploads/day<br />
                 • Edge TTS: Unlimited
               </div>

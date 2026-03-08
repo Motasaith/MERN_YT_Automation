@@ -12,6 +12,7 @@ const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 const { generateScript, getSearchKeywords } = require("./scriptGenerator");
 const { generateTTS } = require("./ttsService");
 const { searchPexelsVideos, downloadPexelsVideo } = require("./pexelsService");
+const { generateAIVideoClip } = require("./aiVideoService");
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -31,9 +32,15 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
   const outputPath = path.join(TEMP_DIR, `scene_${index}_${uuidv4()}.mp4`);
   const duration = scene.duration || 5;
 
+  // Strip emojis and non-ASCII that FFmpeg drawtext can't render
+  const cleanText = (scene.text || '')
+    .replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1FA00}-\u{1FAFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '')
+    .replace(/[^\x20-\x7E\n]/g, '')
+    .trim() || scene.type || 'Text';
+
   // Word-wrap text to fit screen width (~30 chars/line at body size on 1080px)
   const charsPerLine = scene.type === 'title' ? 22 : 28;
-  const wrappedText = scene.text
+  const wrappedText = cleanText
     .split(' ')
     .reduce((lines, word) => {
       const last = lines[lines.length - 1];
@@ -46,14 +53,16 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
     }, [])
     .join('\n');
 
-  // Escape text for FFmpeg drawtext filter
+  // Escape text for FFmpeg drawtext filter — must handle all special chars
   const escapedText = wrappedText
-    .replace(/\\/g, "\\\\\\\\")
-    .replace(/'/g, "'\\\\\\''")
-    .replace(/:/g, "\\\\:")
-    .replace(/\[/g, "\\\\[")
-    .replace(/\]/g, "\\\\]")
-    .replace(/\n/g, "\\\\n");
+    .replace(/\\/g, '/')
+    .replace(/'/g, "\u2019")
+    .replace(/:/g, '\\:')
+    .replace(/%/g, '%%')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/;/g, '\\;')
+    .replace(/\n/g, '\\n');
 
   // Font size based on scene type (sized for 1080 width shorts)
   const fontSizes = {
@@ -77,13 +86,16 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
   return new Promise((resolve, reject) => {
     const command = ffmpeg();
 
+    // Write text to a temp file — avoids all FFmpeg shell escaping issues
+    const textFile = path.join(TEMP_DIR, `text_${index}_${uuidv4()}.txt`);
+    fs.writeFileSync(textFile, wrappedText, 'utf-8');
+    const safeTextPath = textFile.replace(/\\/g, '/').replace(/:/g, '\\:');
+
     // Subtitle positioning: bottom area with text wrapping
-    // x centered, y at 80% of height (bottom area), with word wrap via drawtext's text_w limit
-    const maxTextWidth = Math.floor(width * 0.85);
     const yPos = scene.type === 'title' ? `(h*0.45)` : `(h*0.78)`;
     const boxPad = 14;
     const drawtextFilter = [
-      `drawtext=text='${escapedText}'`,
+      `drawtext=textfile='${safeTextPath}'`,
       `fontsize=${fontSize}`,
       `fontcolor=white`,
       `borderw=3`,
@@ -95,6 +107,10 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
       `boxcolor=black@0.45`,
       `boxborderw=${boxPad}`,
     ].join(':');
+
+    const cleanupTextFile = () => {
+      try { if (fs.existsSync(textFile)) fs.unlinkSync(textFile); } catch (e) {}
+    };
 
     if (bgVideoPath && fs.existsSync(bgVideoPath)) {
       // Use stock video as background
@@ -134,8 +150,9 @@ async function createSceneClip(scene, index, width, height, bgVideoPath = null) 
 
     command
       .output(outputPath)
-      .on("end", () => resolve(outputPath))
+      .on("end", () => { cleanupTextFile(); resolve(outputPath); })
       .on("error", (err) => {
+        cleanupTextFile();
         console.error(`Scene ${index} error:`, err.message);
         reject(err);
       })
@@ -199,6 +216,7 @@ async function generateVideo({
   hashtags,
   videoFormat = "reel",
   videoDuration = "medium",
+  videoSource = "pexels",
   pexelsApiKey = "",
   geminiKeys = [],
   voice = "en-US-ChristopherNeural",
@@ -224,30 +242,60 @@ async function generateVideo({
     await generateTTS(scriptData.fullScript, ttsPath, voice, voiceRate, voicePitch);
     onProgress("Voiceover complete", 25);
 
-    // Step 3: Fetch stock footage (scene-specific queries)
+    // Step 3: Fetch footage based on video source
     let stockVideoPaths = [];
-    if (pexelsApiKey) {
-      onProgress("Fetching stock footage from Pexels...", 30);
 
+    if (videoSource === "ai") {
+      // ── AI-generated video clips ──
+      onProgress("Generating AI video clips...", 30);
       for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
-        // Use AI-generated search query, fallback to generic keywords
-        const query = scene.searchQuery || getSearchKeywords(niche, title)[0] || niche || "cinematic";
-        if (!query) continue;
+        // Build a cinematic prompt from the scene's search query and text
+        const scenePrompt = scene.searchQuery
+          ? `${scene.searchQuery}, cinematic, high quality, smooth motion`
+          : `${scene.text.slice(0, 80)}, cinematic, high quality`;
 
         try {
-          const videos = await searchPexelsVideos(pexelsApiKey, query, 2, orientation);
-          if (videos.length > 0) {
-            const dlPath = path.join(TEMP_DIR, `stock_${i}_${jobId}.mp4`);
-            const downloaded = await downloadPexelsVideo(videos[0], dlPath);
-            if (downloaded) {
-              stockVideoPaths[i] = downloaded;
-            }
+          const result = await generateAIVideoClip(
+            scenePrompt,
+            orientation,
+            scene.duration || 5,
+            (status) => onProgress(`Scene ${i + 1}: ${status}`, 30 + Math.floor((i / scenes.length) * 25))
+          );
+          if (result) {
+            stockVideoPaths[i] = result.path;
+            onProgress(`Scene ${i + 1} clip ready (${result.provider})`, 30 + Math.floor(((i + 1) / scenes.length) * 25));
+          } else {
+            console.log(`No AI clip for scene ${i}, will use solid color background`);
           }
         } catch (err) {
-          console.log(`Pexels fetch failed for scene ${i} ("${query}"): ${err.message}`);
+          console.log(`AI clip failed for scene ${i}: ${err.message}`);
         }
-        onProgress(`Fetching footage ${i + 1}/${scenes.length}...`, 30 + Math.floor((i / scenes.length) * 20));
+      }
+    } else {
+      // ── Pexels stock footage ──
+      if (pexelsApiKey) {
+        onProgress("Fetching stock footage from Pexels...", 30);
+
+        for (let i = 0; i < scenes.length; i++) {
+          const scene = scenes[i];
+          const query = scene.searchQuery || getSearchKeywords(niche, title)[0] || niche || "cinematic";
+          if (!query) continue;
+
+          try {
+            const videos = await searchPexelsVideos(pexelsApiKey, query, 2, orientation);
+            if (videos.length > 0) {
+              const dlPath = path.join(TEMP_DIR, `stock_${i}_${jobId}.mp4`);
+              const downloaded = await downloadPexelsVideo(videos[0], dlPath);
+              if (downloaded) {
+                stockVideoPaths[i] = downloaded;
+              }
+            }
+          } catch (err) {
+            console.log(`Pexels fetch failed for scene ${i} ("${query}"): ${err.message}`);
+          }
+          onProgress(`Fetching footage ${i + 1}/${scenes.length}...`, 30 + Math.floor((i / scenes.length) * 20));
+        }
       }
     }
 

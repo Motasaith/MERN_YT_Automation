@@ -17,6 +17,7 @@ const { generateScript, getSearchKeywords } = require("./services/scriptGenerato
 const { generateVideo } = require("./services/videoGenerator");
 const { VOICES } = require("./services/ttsService");
 const { uploadVideo, isAuthenticated, revokeAuth } = require("./services/youtubeUploader");
+const { getAvailableProviders } = require("./services/aiVideoService");
 
 const app = express();
 const server = http.createServer(app);
@@ -58,6 +59,13 @@ app.get("/api/health", (req, res) => {
  */
 app.get("/api/voices", (req, res) => {
   res.json({ voices: VOICES });
+});
+
+/**
+ * GET /api/ai-providers — Check which AI video providers are configured
+ */
+app.get("/api/ai-providers", (req, res) => {
+  res.json({ providers: getAvailableProviders() });
 });
 
 /**
@@ -110,6 +118,7 @@ app.post("/api/generate", async (req, res) => {
     voicePitch,
     videoFormat, // "reel" or "landscape"
     videoDuration, // "short", "medium", "long"
+    videoSource, // "pexels" or "ai"
   } = req.body;
 
   if (!title) return res.status(400).json({ error: "Title is required" });
@@ -130,6 +139,7 @@ app.post("/api/generate", async (req, res) => {
       hashtags: hashtags || "",
       videoFormat: videoFormat || "reel",
       videoDuration: videoDuration || "medium",
+      videoSource: videoSource || "pexels",
       pexelsApiKey: pexelsKey,
       geminiKeys: allGeminiKeys,
       voice: voice || "en-US-ChristopherNeural",
