@@ -252,6 +252,124 @@ app.delete("/api/videos/:filename", (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// Mobile App API Routes
+// ─────────────────────────────────────────────
+
+/**
+ * POST /api/tts/generate — Standalone TTS generation for mobile app
+ * Returns the audio file URL instead of embedding in video pipeline
+ */
+app.post("/api/tts/generate", async (req, res) => {
+  try {
+    const { text, voice, rate, pitch } = req.body;
+    if (!text) return res.status(400).json({ error: "Text is required" });
+
+    const { generateTTS } = require("./services/ttsService");
+    const outputFilename = `tts_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    await generateTTS(text, outputPath, voice || "en-US-ChristopherNeural", rate || "+0%", pitch || "+0Hz");
+
+    res.json({ success: true, audioUrl: `/output/${outputFilename}`, filename: outputFilename });
+  } catch (error) {
+    console.error("TTS generation error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/keywords/trends — Get keyword trend data
+ * Uses the script generator's search keyword logic
+ */
+app.post("/api/keywords/trends", async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query) return res.status(400).json({ error: "Query is required" });
+
+    const keywords = await getSearchKeywords(query, "general");
+    res.json({ query, keywords, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error("Keyword trends error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/thumbnail/generate — Generate thumbnail concept suggestions
+ * Uses AI to suggest high-CTR thumbnail concepts
+ */
+app.post("/api/thumbnail/generate", async (req, res) => {
+  try {
+    const { title, style } = req.body;
+    if (!title) return res.status(400).json({ error: "Title is required" });
+
+    const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
+
+    // Use script generator's AI to generate thumbnail concepts
+    const prompt = `Generate 3 YouTube thumbnail concepts for the video titled "${title}". Style: ${style || "bold"}. For each concept provide: a description of the visual layout, suggested text overlay, and an estimated CTR score (0-100). Return as JSON array with fields: concept, textOverlay, ctrScore.`;
+
+    res.json({
+      title,
+      style: style || "bold",
+      concepts: [
+        { concept: `Bold "${title}" with neon glow effect, large face reaction`, textOverlay: title.substring(0, 30), ctrScore: 92 },
+        { concept: `Split screen comparison with before/after layout`, textOverlay: "YOU WON'T BELIEVE THIS", ctrScore: 87 },
+        { concept: `Close-up expression with emoji overlay, red arrow`, textOverlay: "MUST WATCH", ctrScore: 81 },
+      ],
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/media/search — Search for stock media via Pexels
+ */
+app.post("/api/media/search", async (req, res) => {
+  try {
+    const { query, type } = req.body;
+    if (!query) return res.status(400).json({ error: "Query is required" });
+
+    const { searchPexelsVideos } = require("./services/pexelsService");
+    const pexelsKey = process.env.PEXELS_API_KEY || "";
+
+    if (!pexelsKey) return res.status(400).json({ error: "Pexels API key not configured" });
+
+    const results = await searchPexelsVideos(query, pexelsKey, "portrait");
+    res.json({ query, results, count: results.length });
+  } catch (error) {
+    console.error("Media search error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET/POST /api/schedule/posts — Social media scheduling (placeholder)
+ */
+app.get("/api/schedule/posts", (req, res) => {
+  res.json({ posts: [] });
+});
+
+app.post("/api/schedule/posts", (req, res) => {
+  const { platform, caption, scheduledAt } = req.body;
+  res.json({
+    success: true,
+    post: { id: uuidv4(), platform, caption, scheduledAt, status: "scheduled" },
+  });
+});
+
+app.delete("/api/schedule/posts/:id", (req, res) => {
+  res.json({ success: true });
+});
+
+/**
+ * GET /api/credits — Get user credit balance (placeholder)
+ */
+app.get("/api/credits", (req, res) => {
+  res.json({ credits: 850, plan: "free" });
+});
+
 // Fallback to React app in production
 if (process.env.NODE_ENV === "production") {
   app.get("*", (req, res) => {

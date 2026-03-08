@@ -12,8 +12,10 @@
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
+const { execFile } = require("child_process");
+const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 
 const TEMP_DIR = path.join(__dirname, "..", "temp");
 
@@ -23,27 +25,12 @@ const TEMP_DIR = path.join(__dirname, "..", "temp");
 // ─────────────────────────────────────────────
 
 function createKlingJWT(accessKey, secretKey) {
-  const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: accessKey,
-    exp: now + 1800, // 30 min
-    nbf: now - 5,
-    iat: now,
-  };
-
-  const b64 = (obj) =>
-    Buffer.from(JSON.stringify(obj))
-      .toString("base64url");
-
-  const headerB64 = b64(header);
-  const payloadB64 = b64(payload);
-  const signature = crypto
-    .createHmac("sha256", secretKey)
-    .update(`${headerB64}.${payloadB64}`)
-    .digest("base64url");
-
-  return `${headerB64}.${payloadB64}.${signature}`;
+  return jwt.sign(
+    { iss: accessKey, exp: now + 1800, nbf: now - 5, iat: now },
+    secretKey,
+    { algorithm: "HS256", header: { alg: "HS256", typ: "JWT" } }
+  );
 }
 
 async function generateWithKling(prompt, aspectRatio, duration) {
@@ -141,7 +128,8 @@ async function generateWithPixverse(prompt, aspectRatio, duration) {
       {
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": apiKey,
+          "API-KEY": apiKey,
+          "Ai-trial-code": "PixVerse",
         },
         timeout: 30000,
       }
@@ -161,7 +149,7 @@ async function generateWithPixverse(prompt, aspectRatio, duration) {
       const statusRes = await axios.get(
         `https://app-api.pixverse.ai/openapi/v2/video/result/${taskId}`,
         {
-          headers: { "X-API-Key": apiKey },
+          headers: { "API-KEY": apiKey, "Ai-trial-code": "PixVerse" },
           timeout: 15000,
         }
       );
@@ -190,150 +178,155 @@ async function generateWithPixverse(prompt, aspectRatio, duration) {
 }
 
 // ─────────────────────────────────────────────
+// Ken Burns effect helper
+// Converts a still image into a video clip with slow zoom/pan
+// ─────────────────────────────────────────────
+
+function imageToVideoKenBurns(imgPath, outputPath, duration = 5) {
+  return new Promise((resolve, reject) => {
+    // Random effect: zoom-in, zoom-out, or pan
+    const effects = [
+      // Slow zoom in
+      `zoompan=z='min(zoom+0.0015,1.4)':d=${duration * 25}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=25`,
+      // Slow zoom out
+      `zoompan=z='if(eq(on,1),1.4,max(zoom-0.0015,1.0))':d=${duration * 25}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=25`,
+      // Pan left to right
+      `zoompan=z='1.15':d=${duration * 25}:x='if(eq(on,1),0,min(x+2,(iw-iw/zoom)))':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=25`,
+    ];
+    const vf = effects[Math.floor(Math.random() * effects.length)];
+
+    const args = [
+      "-loop", "1",
+      "-i", imgPath,
+      "-vf", vf,
+      "-t", String(duration),
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      "-y",
+      outputPath,
+    ];
+
+    execFile(ffmpegPath, args, { timeout: 60000 }, (err) => {
+      if (err) return reject(err);
+      resolve(outputPath);
+    });
+  });
+}
+
+// ─────────────────────────────────────────────
 // Stability AI (Priority 3)
-// text-to-image → image-to-video pipeline
+// text-to-image → Ken Burns video effect
 // ─────────────────────────────────────────────
 
 async function generateWithStability(prompt, aspectRatio, duration) {
   const apiKey = process.env.STABILITY_API_KEY;
   if (!apiKey) return null;
 
-  const headers = {
-    Authorization: `Bearer ${apiKey}`,
-    Accept: "application/json",
-  };
+  const FormData = require("form-data");
 
   try {
-    // Step 1: Generate image from prompt
+    // Generate image from text (SD3.5 requires multipart/form-data)
     console.log("Stability AI: generating scene image...");
+    const imgForm = new FormData();
+    imgForm.append("prompt", prompt);
+    imgForm.append("negative_prompt", "blurry, text, watermark, low quality");
+    imgForm.append("aspect_ratio", aspectRatio === "portrait" ? "9:16" : "16:9");
+    imgForm.append("output_format", "png");
+    imgForm.append("model", "sd3.5-medium");
+
     const imgRes = await axios.post(
       "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+      imgForm,
       {
-        prompt: prompt,
-        negative_prompt: "blurry, text, watermark, low quality",
-        aspect_ratio: aspectRatio === "portrait" ? "9:16" : "16:9",
-        output_format: "png",
-        model: "sd3.5-medium",
-      },
-      {
-        headers: { ...headers, "Content-Type": "application/json" },
+        headers: {
+          ...imgForm.getHeaders(),
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "image/*",
+        },
+        responseType: "arraybuffer",
         timeout: 60000,
       }
     );
 
-    const imageB64 = imgRes.data?.image;
-    if (!imageB64) {
+    if (!imgRes.data || imgRes.data.length === 0) {
       console.log("Stability AI: no image returned");
       return null;
     }
 
-    // Save image to temp
     const imgPath = path.join(TEMP_DIR, `stability_img_${uuidv4()}.png`);
-    fs.writeFileSync(imgPath, Buffer.from(imageB64, "base64"));
+    fs.writeFileSync(imgPath, Buffer.from(imgRes.data));
+    console.log("Stability AI: image generated, applying Ken Burns effect...");
 
-    // Step 2: Image to video
-    console.log("Stability AI: converting image to video...");
-    const FormData = require("form-data");
-    const form = new FormData();
-    form.append("image", fs.createReadStream(imgPath));
-    form.append("cfg_scale", "1.8");
-    form.append("motion_bucket_id", "127");
+    // Convert image to video with Ken Burns zoom/pan effect
+    const vidPath = path.join(TEMP_DIR, `stability_vid_${uuidv4()}.mp4`);
+    await imageToVideoKenBurns(imgPath, vidPath, duration || 5);
 
-    const vidRes = await axios.post(
-      "https://api.stability.ai/v2beta/image-to-video",
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          Authorization: `Bearer ${apiKey}`,
-        },
-        timeout: 30000,
-      }
-    );
-
-    const generationId = vidRes.data?.id;
-    if (!generationId) {
-      console.log("Stability AI: no generation_id returned");
-      try { fs.unlinkSync(imgPath); } catch (e) {}
-      return null;
-    }
-
-    // Poll for completion (up to 5 minutes)
-    console.log(`Stability AI: polling generation ${generationId}...`);
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
-
-      const statusRes = await axios.get(
-        `https://api.stability.ai/v2beta/image-to-video/result/${generationId}`,
-        {
-          headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-          timeout: 15000,
-        }
-      );
-
-      if (statusRes.status === 200 && statusRes.data?.video) {
-        console.log("Stability AI: video ready");
-        try { fs.unlinkSync(imgPath); } catch (e) {}
-        // Video is returned as base64
-        const videoB64 = statusRes.data.video;
-        const vidPath = path.join(TEMP_DIR, `stability_vid_${uuidv4()}.mp4`);
-        fs.writeFileSync(vidPath, Buffer.from(videoB64, "base64"));
-        return { localPath: vidPath, provider: "stability" };
-      }
-      // 202 = still processing
-    }
-
-    console.log("Stability AI: timed out");
     try { fs.unlinkSync(imgPath); } catch (e) {}
-    return null;
+    console.log("Stability AI: video clip ready");
+    return { localPath: vidPath, provider: "stability" };
   } catch (err) {
-    console.log(`Stability AI error: ${err.response?.status} ${err.response?.data?.message || err.message}`);
+    console.log(`Stability AI error: ${err.response?.status || ""} ${err.response?.data?.message || err.message}`);
     return null;
   }
 }
 
 // ─────────────────────────────────────────────
 // HuggingFace Inference API (Priority 4 — Fallback)
-// Uses a text-to-video model on HF Inference
+// Uses text-to-image models → Ken Burns video effect
 // ─────────────────────────────────────────────
 
 async function generateWithHuggingFace(prompt, aspectRatio, duration) {
   const token = process.env.HF_ACCESS_TOKEN;
   if (!token) return null;
 
-  try {
-    console.log("HuggingFace: submitting text-to-video inference...");
-    const response = await axios.post(
-      "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b",
-      { inputs: prompt },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        responseType: "arraybuffer",
-        timeout: 300000, // 5 min — HF can be slow
+  // Text-to-image models (more reliable than text-to-video on HF)
+  const models = [
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "runwayml/stable-diffusion-v1-5",
+    "CompVis/stable-diffusion-v1-4",
+  ];
+
+  for (const model of models) {
+    try {
+      console.log(`HuggingFace: generating image with ${model}...`);
+      const response = await axios.post(
+        `https://api-inference.huggingface.co/models/${model}`,
+        { inputs: prompt },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          responseType: "arraybuffer",
+          timeout: 120000,
+        }
+      );
+
+      if (response.status === 200 && response.data && response.data.length > 1000) {
+        const imgPath = path.join(TEMP_DIR, `hf_img_${uuidv4()}.png`);
+        fs.writeFileSync(imgPath, Buffer.from(response.data));
+        console.log(`HuggingFace: image ready via ${model}, applying Ken Burns effect...`);
+
+        const vidPath = path.join(TEMP_DIR, `hf_vid_${uuidv4()}.mp4`);
+        await imageToVideoKenBurns(imgPath, vidPath, duration || 5);
+
+        try { fs.unlinkSync(imgPath); } catch (e) {}
+        console.log("HuggingFace: video clip ready");
+        return { localPath: vidPath, provider: "huggingface" };
       }
-    );
-
-    if (response.status === 200 && response.data) {
-      const vidPath = path.join(TEMP_DIR, `hf_vid_${uuidv4()}.mp4`);
-      fs.writeFileSync(vidPath, Buffer.from(response.data));
-      console.log("HuggingFace: video generated");
-      return { localPath: vidPath, provider: "huggingface" };
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 503) {
+        console.log(`HuggingFace: ${model} is loading, trying next...`);
+      } else {
+        console.log(`HuggingFace: ${model} error ${status}, trying next...`);
+      }
+      continue;
     }
-
-    console.log("HuggingFace: no video data returned");
-    return null;
-  } catch (err) {
-    const status = err.response?.status;
-    if (status === 503) {
-      console.log("HuggingFace: model is loading, would need to wait");
-    } else {
-      console.log(`HuggingFace error: ${status} ${err.message}`);
-    }
-    return null;
   }
+
+  console.log("HuggingFace: all models failed");
+  return null;
 }
 
 // ─────────────────────────────────────────────
