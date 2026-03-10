@@ -1,12 +1,12 @@
 // Home Screen — Dashboard matching CreatorFlow design
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ScrollView,
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Image,
+  RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -18,18 +18,45 @@ import SectionHeader from '../../src/components/SectionHeader';
 import WorkflowStep from '../../src/components/WorkflowStep';
 import Card from '../../src/components/Card';
 import { COLORS, SPACING, RADIUS, TOOLS, WORKFLOW_STEPS } from '../../src/constants/theme';
+import { getCredits, getVideos, getYouTubeStatus } from '../../src/services/api';
 
 export default function HomeScreen() {
   const router = useRouter();
+  const [credits, setCredits] = useState('--');
+  const [videoCount, setVideoCount] = useState('--');
+  const [ytConnected, setYtConnected] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [recentFiles, setRecentFiles] = useState([]);
 
-  const activeProjects = [
-    { id: 1, title: '"Top 10 AI Tools 2024"', status: 'Editing', color: COLORS.warning },
-    { id: 2, title: '"Crypto Market Secrets"', status: 'Drafting', color: COLORS.textMuted },
-  ];
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  const loadDashboard = async () => {
+    try {
+      const [creditData, videoData, ytData] = await Promise.all([
+        getCredits().catch(() => ({ credits: '--' })),
+        getVideos().catch(() => ({ videos: [] })),
+        getYouTubeStatus().catch(() => ({ authenticated: false })),
+      ]);
+      setCredits(String(creditData.credits));
+      const vids = videoData.videos || [];
+      setVideoCount(String(vids.length));
+      setYtConnected(ytData.authenticated || false);
+      setRecentFiles(vids.slice(0, 3).map((v) => ({
+        id: v.filename,
+        title: v.filename?.replace(/\.[^.]+$/, '').replace(/_/g, ' ') || 'Untitled',
+        status: 'Ready',
+        color: COLORS.success,
+      })));
+    } catch (e) {}
+    setRefreshing(false);
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadDashboard(); }} tintColor={COLORS.primary} />}>
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
@@ -53,12 +80,12 @@ export default function HomeScreen() {
 
         {/* Stats Row */}
         <View style={styles.statsRow}>
-          <StatBadge label="Total Reach" value="1.2M" change="+12%" color={COLORS.primary} />
-          <StatBadge label="Engagement" value="8.4%" change="+2.5%" color={COLORS.info} />
+          <StatBadge label="Files" value={videoCount} change="output" color={COLORS.primary} />
+          <StatBadge label="Credits" value={credits} change="remaining" color={COLORS.warning} />
         </View>
         <View style={styles.statsRow}>
-          <StatBadge label="Active Projects" value="12" change="+4" color={COLORS.success} />
-          <StatBadge label="Credits Left" value="850" change="Top up" color={COLORS.warning} />
+          <StatBadge label="YouTube" value={ytConnected ? 'Connected' : 'Offline'} change={ytConnected ? '✓' : '—'} color={ytConnected ? COLORS.success : COLORS.textMuted} />
+          <StatBadge label="Server" value="Local" change="5000" color={COLORS.info} />
         </View>
 
         {/* Creative Ecosystem */}
@@ -88,9 +115,13 @@ export default function HomeScreen() {
           ))}
         </Card>
 
-        {/* Active Projects */}
-        <SectionHeader title="Active Projects" actionText="See All" onAction={() => router.push('/library')} />
-        {activeProjects.map((p) => (
+        {/* Recent Files */}
+        <SectionHeader title="Recent Files" actionText="See All" onAction={() => router.push('/(tabs)/library')} />
+        {recentFiles.length === 0 ? (
+          <Card style={styles.projectCard}>
+            <Text style={{ color: COLORS.textMuted, textAlign: 'center' }}>No files yet — generate your first content!</Text>
+          </Card>
+        ) : recentFiles.map((p) => (
           <Card key={p.id} style={styles.projectCard} onPress={() => {}}>
             <View style={styles.projectRow}>
               <View style={[styles.projectThumb, { backgroundColor: p.color + '33' }]}>

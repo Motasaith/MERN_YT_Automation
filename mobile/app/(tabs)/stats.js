@@ -1,72 +1,100 @@
-// Stats Tab — Analytics dashboard
-import React from 'react';
-import { ScrollView, View, Text, StyleSheet } from 'react-native';
+// Stats Tab — Analytics dashboard with real data
+import React, { useState, useEffect } from 'react';
+import { ScrollView, View, Text, StyleSheet, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import Card from '../../src/components/Card';
 import StatBadge from '../../src/components/StatBadge';
 import SectionHeader from '../../src/components/SectionHeader';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/theme';
-
-const PLATFORM_STATS = [
-  { platform: 'YouTube', icon: 'play-circle-filled', subs: '12.4K', views: '89K', color: '#FF0000' },
-  { platform: 'TikTok', icon: 'music-note', subs: '8.2K', views: '245K', color: '#00F2EA' },
-  { platform: 'Instagram', icon: 'photo-camera', subs: '5.1K', views: '34K', color: '#E4405F' },
-];
-
-const RECENT_ACTIVITY = [
-  { id: 1, action: 'Script generated', detail: '"Top 10 AI Tools"', time: '2h ago', icon: 'description' },
-  { id: 2, action: 'Video published', detail: '"Crypto Analysis"', time: '5h ago', icon: 'cloud-upload' },
-  { id: 3, action: 'Thumbnail created', detail: '"Tech Review"', time: '1d ago', icon: 'image' },
-  { id: 4, action: 'Post scheduled', detail: 'Instagram Reel', time: '1d ago', icon: 'schedule' },
-];
+import { getVideos, getCredits, getYouTubeStatus, getScheduledPosts } from '../../src/services/api';
 
 export default function StatsScreen() {
+  const [videoCount, setVideoCount] = useState('--');
+  const [credits, setCredits] = useState('--');
+  const [ytConnected, setYtConnected] = useState(false);
+  const [scheduledCount, setScheduledCount] = useState('--');
+  const [files, setFiles] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => { loadStats(); }, []);
+
+  const loadStats = async () => {
+    try {
+      const [vidData, creditData, ytData, schedData] = await Promise.all([
+        getVideos().catch(() => ({ videos: [] })),
+        getCredits().catch(() => ({ credits: '--' })),
+        getYouTubeStatus().catch(() => ({ authenticated: false })),
+        getScheduledPosts().catch(() => ({ posts: [] })),
+      ]);
+      const vids = vidData.videos || [];
+      setFiles(vids);
+      setVideoCount(String(vids.length));
+      setCredits(String(creditData.credits));
+      setYtConnected(ytData.authenticated || false);
+      setScheduledCount(String((schedData.posts || []).length));
+    } catch (e) {}
+    setRefreshing(false);
+  };
+
+  const ext = (name) => (name || '').split('.').pop().toLowerCase();
+  const audioCount = files.filter((f) => ext(f.filename) === 'mp3').length;
+  const imageCount = files.filter((f) => ['png','jpg','jpeg','webp'].includes(ext(f.filename))).length;
+  const videoFileCount = files.filter((f) => ['mp4','mkv','avi','mov'].includes(ext(f.filename))).length;
+
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadStats(); }} tintColor={COLORS.primary} />}>
         <Text style={styles.title}>Analytics</Text>
 
         {/* Overview Stats */}
         <View style={styles.row}>
-          <StatBadge label="Total Views" value="368K" change="+18%" color={COLORS.primary} />
-          <StatBadge label="Subscribers" value="25.7K" change="+340" color={COLORS.success} />
+          <StatBadge label="Total Files" value={videoCount} color={COLORS.primary} />
+          <StatBadge label="Credits Left" value={credits} color={COLORS.warning} />
         </View>
         <View style={styles.row}>
-          <StatBadge label="Videos Created" value="47" color={COLORS.info} />
-          <StatBadge label="Avg. CTR" value="6.2%" change="+0.8%" color={COLORS.warning} />
+          <StatBadge label="Scheduled" value={scheduledCount} color={COLORS.info} />
+          <StatBadge label="YouTube" value={ytConnected ? 'Connected' : 'Offline'} color={ytConnected ? COLORS.success : COLORS.textMuted} />
         </View>
 
-        {/* Platform Breakdown */}
-        <SectionHeader title="Platform Performance" />
-        {PLATFORM_STATS.map((p) => (
-          <Card key={p.platform} style={styles.platformCard}>
+        {/* File Breakdown */}
+        <SectionHeader title="File Breakdown" />
+        {[
+          { label: 'Videos', icon: 'movie', count: videoFileCount, color: COLORS.primary },
+          { label: 'Audio', icon: 'audiotrack', count: audioCount, color: '#00F2EA' },
+          { label: 'Images', icon: 'image', count: imageCount, color: '#E4405F' },
+        ].map((item) => (
+          <Card key={item.label} style={styles.platformCard}>
             <View style={styles.platformRow}>
-              <View style={[styles.platformIcon, { backgroundColor: p.color + '22' }]}>
-                <MaterialIcons name={p.icon} size={22} color={p.color} />
+              <View style={[styles.platformIcon, { backgroundColor: item.color + '22' }]}>
+                <MaterialIcons name={item.icon} size={22} color={item.color} />
               </View>
               <View style={styles.platformInfo}>
-                <Text style={styles.platformName}>{p.platform}</Text>
-                <Text style={styles.platformSubs}>{p.subs} subscribers</Text>
+                <Text style={styles.platformName}>{item.label}</Text>
+                <Text style={styles.platformSubs}>{item.count} file{item.count !== 1 ? 's' : ''}</Text>
               </View>
-              <Text style={[styles.platformViews, { color: p.color }]}>{p.views} views</Text>
+              <Text style={[styles.platformViews, { color: item.color }]}>{item.count}</Text>
             </View>
           </Card>
         ))}
 
-        {/* Recent Activity */}
-        <SectionHeader title="Recent Activity" />
-        {RECENT_ACTIVITY.map((a) => (
-          <Card key={a.id} style={styles.activityCard}>
+        {/* Recent Files */}
+        <SectionHeader title="Recent Files" />
+        {files.length === 0 ? (
+          <Card style={styles.activityCard}>
+            <Text style={{ color: COLORS.textMuted, textAlign: 'center' }}>No files generated yet</Text>
+          </Card>
+        ) : files.slice(0, 6).map((f, i) => (
+          <Card key={f.filename} style={styles.activityCard}>
             <View style={styles.activityRow}>
               <View style={styles.activityIcon}>
-                <MaterialIcons name={a.icon} size={18} color={COLORS.primary} />
+                <MaterialIcons name={['mp4','mkv','avi','mov'].includes(ext(f.filename)) ? 'movie' : ext(f.filename) === 'mp3' ? 'audiotrack' : 'image'} size={18} color={COLORS.primary} />
               </View>
               <View style={styles.activityInfo}>
-                <Text style={styles.activityAction}>{a.action}</Text>
-                <Text style={styles.activityDetail}>{a.detail}</Text>
+                <Text style={styles.activityAction} numberOfLines={1}>{f.filename}</Text>
+                <Text style={styles.activityDetail}>{f.size ? `${(f.size / 1024).toFixed(0)} KB` : 'File'}</Text>
               </View>
-              <Text style={styles.activityTime}>{a.time}</Text>
             </View>
           </Card>
         ))}

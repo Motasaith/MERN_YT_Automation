@@ -30,9 +30,10 @@ export default function ScriptDetail() {
   const [mediaLoading, setMediaLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
 
-  const fullText = scriptData?.scenes
-    ? scriptData.scenes.map((s) => s.narration).join('\n\n')
-    : 'No script generated yet.';
+  const fullText = scriptData?.fullScript
+    || (scriptData?.scenes
+      ? scriptData.scenes.map((s) => s.text).join('\n\n')
+      : 'No script generated yet.');
 
   const handleGenerateVoice = async () => {
     setVoiceLoading(true);

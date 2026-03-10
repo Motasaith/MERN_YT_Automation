@@ -73,10 +73,16 @@ export const getKeywordTrends = (query) =>
   });
 
 // ── Thumbnails ───────────────────────────────
-export const generateThumbnail = (title, style) =>
+export const generateThumbnailPrompt = (title, script, style) =>
+  apiCall('/api/thumbnail/prompt', {
+    method: 'POST',
+    body: JSON.stringify({ title, script, style }),
+  });
+
+export const generateThumbnailImage = (prompt) =>
   apiCall('/api/thumbnail/generate', {
     method: 'POST',
-    body: JSON.stringify({ title, style }),
+    body: JSON.stringify({ prompt }),
   });
 
 // ── Social Scheduling ────────────────────────

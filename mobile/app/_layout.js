@@ -24,6 +24,8 @@ export default function RootLayout() {
         <Stack.Screen name="scheduler" options={{ presentation: 'card' }} />
         <Stack.Screen name="editor" options={{ presentation: 'card' }} />
         <Stack.Screen name="brand" options={{ presentation: 'card' }} />
+        <Stack.Screen name="gallery" options={{ presentation: 'card' }} />
+        <Stack.Screen name="voice" options={{ presentation: 'card' }} />
       </Stack>
     </View>
   );

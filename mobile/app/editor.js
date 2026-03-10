@@ -1,5 +1,5 @@
 // Online Video Editor — Cloud-based editing with stock library
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ScrollView,
   View,
@@ -7,14 +7,16 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import GradientButton from '../src/components/GradientButton';
 import Card from '../src/components/Card';
 import PremiumBadge from '../src/components/PremiumBadge';
 import { COLORS, SPACING, RADIUS } from '../src/constants/theme';
+import { searchMedia, startVideoGeneration } from '../src/services/api';
 
 const TIMELINE_TRACKS = [
   { id: 1, type: 'video', label: 'Scene 1 — Hook', duration: '0:00 - 0:05', icon: 'videocam' },
@@ -28,7 +30,41 @@ const STOCK_CATEGORIES = ['Technology', 'Business', 'Nature', 'People', 'Abstrac
 
 export default function EditorScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const [format, setFormat] = useState('reel');
+  const [stockClips, setStockClips] = useState([]);
+  const [stockLoading, setStockLoading] = useState(false);
+  const [selectedCat, setSelectedCat] = useState(null);
+  const [generating, setGenerating] = useState(false);
+
+  const handleStockSearch = async (cat) => {
+    setSelectedCat(cat);
+    setStockLoading(true);
+    try {
+      const res = await searchMedia(cat, 'video');
+      const vids = res.videos || [];
+      setStockClips(vids.slice(0, 6).map((v) => ({
+        id: v.id,
+        label: cat,
+        image: v.image || v.video_pictures?.[0]?.picture,
+      })));
+    } catch (e) {
+      setStockClips([]);
+    }
+    setStockLoading(false);
+  };
+
+  const handleGenerateVideo = async () => {
+    const topic = params.topic || 'technology trends';
+    setGenerating(true);
+    try {
+      const res = await startVideoGeneration({ topic, orientation: format === 'reel' ? 'portrait' : 'landscape' });
+      Alert.alert('Generation Started', res.message || 'Your video is being generated on the server.');
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Failed to start video generation');
+    }
+    setGenerating(false);
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -95,21 +131,27 @@ export default function EditorScreen() {
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.stockScroll}>
           {STOCK_CATEGORIES.map((cat) => (
-            <TouchableOpacity key={cat} style={styles.stockChip}>
-              <Text style={styles.stockChipText}>{cat}</Text>
+            <TouchableOpacity key={cat} style={[styles.stockChip, selectedCat === cat && styles.stockChipActive]} onPress={() => handleStockSearch(cat)}>
+              <Text style={[styles.stockChipText, selectedCat === cat && { color: COLORS.primary }]}>{cat}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
 
         {/* Stock Preview Grid */}
-        <View style={styles.stockGrid}>
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <TouchableOpacity key={i} style={styles.stockItem}>
-              <MaterialIcons name="movie" size={28} color={COLORS.textDark} />
-              <Text style={styles.stockItemLabel}>Clip {i}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {stockLoading ? (
+          <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+        ) : (
+          <View style={styles.stockGrid}>
+            {stockClips.length === 0 ? (
+              <Text style={{ color: COLORS.textMuted, fontSize: 13 }}>Tap a category to search Pexels videos</Text>
+            ) : stockClips.map((clip) => (
+              <TouchableOpacity key={clip.id} style={styles.stockItem} onPress={() => router.push('/gallery')}>
+                <MaterialIcons name="movie" size={28} color={COLORS.primary} />
+                <Text style={styles.stockItemLabel} numberOfLines={1}>{clip.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         {/* AI Video Generation */}
         <Card glow style={styles.aiCard}>
@@ -122,9 +164,10 @@ export default function EditorScreen() {
             Generate unique AI video clips for each scene. Uses Kling AI, Pixverse, and Stability AI.
           </Text>
           <GradientButton
-            title="Generate AI Clips"
+            title={generating ? 'Generating...' : 'Generate AI Video'}
             icon="movie-filter"
-            onPress={() => Alert.alert('Premium', 'AI video generation requires a premium subscription')}
+            onPress={handleGenerateVideo}
+            disabled={generating}
             small
             style={{ marginTop: SPACING.md }}
           />
@@ -132,10 +175,10 @@ export default function EditorScreen() {
 
         {/* Export */}
         <GradientButton
-          title="Export Video"
-          icon="file-download"
-          onPress={() => Alert.alert('Exporting', 'Video export started...')}
-          style={{ marginTop: SPACING.md }}
+            title={generating ? 'Processing...' : 'Generate & Export Video'}
+            icon="file-download"
+            onPress={handleGenerateVideo}
+            disabled={generating}
         />
 
         <View style={{ height: 30 }} />
@@ -215,6 +258,7 @@ const styles = StyleSheet.create({
     marginRight: SPACING.sm,
   },
   stockChipText: { fontSize: 13, color: COLORS.textSecondary, fontWeight: '500' },
+  stockChipActive: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryGlow },
 
   stockGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
   stockItem: {

@@ -1,5 +1,5 @@
 // Social Scheduler — Multi-platform auto-posting tool
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ScrollView,
   View,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -15,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import GradientButton from '../src/components/GradientButton';
 import Card from '../src/components/Card';
 import { COLORS, SPACING, RADIUS } from '../src/constants/theme';
+import { getScheduledPosts, createScheduledPost, deleteScheduledPost } from '../src/services/api';
 
 const PLATFORMS = [
   { id: 'youtube', name: 'YouTube', icon: 'play-circle-filled', color: '#FF0000' },
@@ -23,17 +25,29 @@ const PLATFORMS = [
   { id: 'twitter', name: 'X / Twitter', icon: 'tag', color: '#1DA1F2' },
 ];
 
-const SCHEDULED_POSTS = [
-  { id: 1, title: 'AI Tools Review', platform: 'YouTube', date: 'Mar 10, 3:00 PM', status: 'Scheduled' },
-  { id: 2, title: 'Quick Crypto Tip', platform: 'TikTok', date: 'Mar 11, 12:00 PM', status: 'Scheduled' },
-  { id: 3, title: 'Behind the Scenes', platform: 'Instagram', date: 'Mar 11, 6:00 PM', status: 'Draft' },
-];
-
 export default function SchedulerScreen() {
   const router = useRouter();
   const [selectedPlatforms, setSelectedPlatforms] = useState(['youtube']);
   const [caption, setCaption] = useState('');
   const [scheduleDate, setScheduleDate] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [posts, setPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(true);
+
+  useEffect(() => {
+    loadPosts();
+  }, []);
+
+  const loadPosts = async () => {
+    try {
+      const data = await getScheduledPosts();
+      setPosts(data.posts || []);
+    } catch (err) {
+      // Server may not be running
+    } finally {
+      setPostsLoading(false);
+    }
+  };
 
   const togglePlatform = (id) => {
     setSelectedPlatforms((prev) =>
@@ -41,12 +55,42 @@ export default function SchedulerScreen() {
     );
   };
 
-  const handleSchedule = () => {
+  const handleSchedule = async () => {
     if (!caption.trim()) {
       Alert.alert('Required', 'Enter a caption for your post');
       return;
     }
-    Alert.alert('Scheduled!', `Post scheduled to ${selectedPlatforms.join(', ')}`);
+    if (!scheduleDate.trim()) {
+      Alert.alert('Required', 'Enter a schedule date and time');
+      return;
+    }
+    setLoading(true);
+    try {
+      for (const platform of selectedPlatforms) {
+        await createScheduledPost({
+          platform,
+          caption: caption.trim(),
+          scheduledAt: scheduleDate.trim(),
+        });
+      }
+      Alert.alert('Scheduled!', `Post scheduled to ${selectedPlatforms.join(', ')}`);
+      setCaption('');
+      setScheduleDate('');
+      loadPosts();
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeletePost = async (id) => {
+    try {
+      await deleteScheduledPost(id);
+      setPosts((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    }
   };
 
   return (
@@ -115,32 +159,37 @@ export default function SchedulerScreen() {
           title="Schedule Post"
           icon="schedule-send"
           onPress={handleSchedule}
+          loading={loading}
           style={{ marginTop: SPACING.xl }}
         />
 
         {/* Upcoming Posts */}
         <Text style={styles.sectionTitle}>Upcoming Posts</Text>
-        {SCHEDULED_POSTS.map((post) => (
-          <Card key={post.id} style={styles.postCard}>
-            <View style={styles.postRow}>
-              <View style={styles.postInfo}>
-                <Text style={styles.postTitle}>{post.title}</Text>
-                <View style={styles.postMeta}>
-                  <Text style={styles.postPlatform}>{post.platform}</Text>
-                  <Text style={styles.postDate}> • {post.date}</Text>
+        {postsLoading ? (
+          <ActivityIndicator color={COLORS.primary} style={{ marginVertical: 20 }} />
+        ) : posts.length > 0 ? (
+          posts.map((post) => (
+            <Card key={post.id} style={styles.postCard}>
+              <View style={styles.postRow}>
+                <View style={styles.postInfo}>
+                  <Text style={styles.postTitle}>{post.caption || post.title || 'Untitled'}</Text>
+                  <View style={styles.postMeta}>
+                    <Text style={styles.postPlatform}>{post.platform}</Text>
+                    <Text style={styles.postDate}> • {post.scheduledAt || post.date}</Text>
+                  </View>
                 </View>
+                <TouchableOpacity onPress={() => handleDeletePost(post.id)} style={styles.deleteBtn}>
+                  <MaterialIcons name="close" size={18} color={COLORS.textMuted} />
+                </TouchableOpacity>
               </View>
-              <View style={[styles.statusBadge, post.status === 'Scheduled'
-                ? { backgroundColor: COLORS.success + '22', borderColor: COLORS.success }
-                : { backgroundColor: COLORS.textMuted + '22', borderColor: COLORS.textMuted }
-              ]}>
-                <Text style={[styles.statusText, { color: post.status === 'Scheduled' ? COLORS.success : COLORS.textMuted }]}>
-                  {post.status}
-                </Text>
-              </View>
-            </View>
+            </Card>
+          ))
+        ) : (
+          <Card style={styles.emptyCard}>
+            <MaterialIcons name="event-available" size={36} color={COLORS.textDark} />
+            <Text style={styles.emptyText}>No scheduled posts yet</Text>
           </Card>
-        ))}
+        )}
 
         <View style={{ height: 30 }} />
       </ScrollView>
@@ -206,11 +255,7 @@ const styles = StyleSheet.create({
   postMeta: { flexDirection: 'row', marginTop: 4 },
   postPlatform: { fontSize: 12, fontWeight: '600', color: COLORS.primary },
   postDate: { fontSize: 12, color: COLORS.textMuted },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: RADIUS.full,
-    borderWidth: 1,
-  },
-  statusText: { fontSize: 10, fontWeight: '700' },
+  deleteBtn: { padding: 8 },
+  emptyCard: { alignItems: 'center', paddingVertical: SPACING.xl },
+  emptyText: { fontSize: 14, color: COLORS.textMuted, marginTop: SPACING.sm },
 });

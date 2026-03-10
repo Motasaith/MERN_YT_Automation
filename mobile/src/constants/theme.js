@@ -90,8 +90,10 @@ export const WORKFLOW_STEPS = [
 
 export const TOOLS = [
   { id: 'script', name: 'Script Generator', desc: 'AI-powered scripts for YouTube, TikTok & Reels.', icon: 'description', route: '/scripts/generator' },
+  { id: 'voice', name: 'Voice Generator', desc: 'Neural text-to-speech with 12+ AI voices.', icon: 'record-voice-over', route: '/voice' },
   { id: 'keywords', name: 'Keyword Trends', desc: 'Real-time search insights and viral topics.', icon: 'trending-up', route: '/keywords' },
-  { id: 'thumbnail', name: 'Thumbnail AI', desc: 'Generate high-CTR thumbnail concepts.', icon: 'image', route: '/thumbnail' },
+  { id: 'thumbnail', name: 'Thumbnail AI', desc: 'Generate thumbnails with Stability AI.', icon: 'image', route: '/thumbnail' },
+  { id: 'gallery', name: 'Media Gallery', desc: 'Browse free stock photos & videos from Pexels.', icon: 'collections', route: '/gallery' },
   { id: 'editor', name: 'Online Video Editor', desc: 'Cloud-based editing with stock library.', icon: 'movie-filter', route: '/editor' },
   { id: 'scheduler', name: 'Social Scheduler', desc: 'Multi-platform auto-posting tool.', icon: 'calendar-month', route: '/scheduler' },
   { id: 'brand', name: 'Brand Assets', desc: 'Manage logos, fonts, and brand styles.', icon: 'palette', route: '/brand' },

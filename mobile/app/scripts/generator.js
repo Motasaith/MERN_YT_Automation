@@ -116,9 +116,9 @@ export default function ScriptGenerator() {
               <Text style={styles.draftText}>DRAFT V1</Text>
             </View>
             <Text style={styles.scriptPreview} numberOfLines={8}>
-              {script.scenes
-                ? script.scenes.map((s) => s.narration).join('\n\n')
-                : JSON.stringify(script).substring(0, 300)}
+              {script.fullScript || (script.scenes
+                ? script.scenes.map((s) => s.text).join('\n\n')
+                : JSON.stringify(script).substring(0, 300))}
             </Text>
             <GradientButton
               title="Open Full Script"

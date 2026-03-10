@@ -11,6 +11,7 @@ const { Server } = require("socket.io");
 const path = require("path");
 const fs = require("fs");
 const { v4: uuidv4 } = require("uuid");
+const axios = require("axios");
 
 // Services
 const { generateScript, getSearchKeywords } = require("./services/scriptGenerator");
@@ -296,29 +297,99 @@ app.post("/api/keywords/trends", async (req, res) => {
 });
 
 /**
- * POST /api/thumbnail/generate — Generate thumbnail concept suggestions
- * Uses AI to suggest high-CTR thumbnail concepts
+ * POST /api/thumbnail/prompt — Generate an AI prompt for thumbnail from title/script via DeepSeek
+ */
+app.post("/api/thumbnail/prompt", async (req, res) => {
+  try {
+    const { title, script, style } = req.body;
+    if (!title) return res.status(400).json({ error: "Title is required" });
+
+    const openRouterKey = process.env.OPENROUTER_API_KEY || "";
+    if (!openRouterKey) return res.status(400).json({ error: "OpenRouter API key not configured" });
+
+    const systemPrompt = `You are a YouTube thumbnail design expert. Given a video title and optional script, generate a detailed image generation prompt for creating a high-CTR YouTube thumbnail. The prompt should describe visual elements, colors, composition, and style. Keep it under 200 words. Style preference: ${style || "bold"}. Return ONLY the image prompt, no explanations.`;
+
+    const userContent = script
+      ? `Video Title: "${title}"\n\nScript excerpt: "${script.substring(0, 500)}"`
+      : `Video Title: "${title}"`;
+
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "deepseek/deepseek-chat",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: 512,
+        temperature: 0.8,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://youtube-automation-studio.local",
+          "X-Title": "YouTube Automation Studio",
+        },
+        timeout: 30000,
+      }
+    );
+
+    const prompt = response.data?.choices?.[0]?.message?.content?.trim();
+    if (!prompt) return res.status(500).json({ error: "Failed to generate prompt" });
+
+    res.json({ prompt, title, style: style || "bold" });
+  } catch (error) {
+    console.error("Thumbnail prompt error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/thumbnail/generate — Generate actual thumbnail image via Stability AI
  */
 app.post("/api/thumbnail/generate", async (req, res) => {
   try {
-    const { title, style } = req.body;
-    if (!title) return res.status(400).json({ error: "Title is required" });
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt is required" });
 
-    const geminiKeys = (process.env.GEMINI_API_KEYS || "").split(",").filter((k) => k.trim());
+    const stabilityKey = process.env.STABILITY_API_KEY || "";
+    if (!stabilityKey) return res.status(400).json({ error: "Stability API key not configured" });
 
-    // Use script generator's AI to generate thumbnail concepts
-    const prompt = `Generate 3 YouTube thumbnail concepts for the video titled "${title}". Style: ${style || "bold"}. For each concept provide: a description of the visual layout, suggested text overlay, and an estimated CTR score (0-100). Return as JSON array with fields: concept, textOverlay, ctrScore.`;
+    const FormData = require("form-data");
+    const imgForm = new FormData();
+    imgForm.append("prompt", prompt);
+    imgForm.append("negative_prompt", "blurry, text, watermark, low quality, distorted faces");
+    imgForm.append("aspect_ratio", "16:9");
+    imgForm.append("output_format", "png");
+    imgForm.append("model", "sd3.5-medium");
 
-    res.json({
-      title,
-      style: style || "bold",
-      concepts: [
-        { concept: `Bold "${title}" with neon glow effect, large face reaction`, textOverlay: title.substring(0, 30), ctrScore: 92 },
-        { concept: `Split screen comparison with before/after layout`, textOverlay: "YOU WON'T BELIEVE THIS", ctrScore: 87 },
-        { concept: `Close-up expression with emoji overlay, red arrow`, textOverlay: "MUST WATCH", ctrScore: 81 },
-      ],
-    });
+    const imgRes = await axios.post(
+      "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+      imgForm,
+      {
+        headers: {
+          ...imgForm.getHeaders(),
+          Authorization: `Bearer ${stabilityKey}`,
+          Accept: "image/*",
+        },
+        responseType: "arraybuffer",
+        timeout: 60000,
+      }
+    );
+
+    if (!imgRes.data || imgRes.data.length === 0) {
+      return res.status(500).json({ error: "Stability AI returned no image" });
+    }
+
+    // Save and serve the image
+    const filename = `thumb_${Date.now()}.png`;
+    const filepath = path.join(OUTPUT_DIR, filename);
+    fs.writeFileSync(filepath, Buffer.from(imgRes.data));
+
+    res.json({ success: true, imageUrl: `/output/${filename}`, filename });
   } catch (error) {
+    console.error("Thumbnail generate error:", error.response?.data?.toString() || error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -331,15 +402,33 @@ app.post("/api/media/search", async (req, res) => {
     const { query, type } = req.body;
     if (!query) return res.status(400).json({ error: "Query is required" });
 
-    const { searchPexelsVideos } = require("./services/pexelsService");
     const pexelsKey = process.env.PEXELS_API_KEY || "";
-
     if (!pexelsKey) return res.status(400).json({ error: "Pexels API key not configured" });
 
-    const results = await searchPexelsVideos(query, pexelsKey, "portrait");
-    res.json({ query, results, count: results.length });
+    if (type === "photo") {
+      // Search photos via Pexels Photos API
+      const photoRes = await axios.get("https://api.pexels.com/v1/search", {
+        headers: { Authorization: pexelsKey },
+        params: { query, per_page: 20, orientation: "landscape" },
+      });
+      const photos = (photoRes.data?.photos || []).map((p) => ({
+        id: p.id,
+        url: p.src.large,
+        thumbnail: p.src.medium,
+        width: p.width,
+        height: p.height,
+        photographer: p.photographer,
+        alt: p.alt,
+      }));
+      res.json({ query, type: "photo", results: photos, count: photos.length });
+    } else {
+      // Search videos via Pexels Videos API
+      const { searchPexelsVideos } = require("./services/pexelsService");
+      const results = await searchPexelsVideos(pexelsKey, query, 15, "landscape");
+      res.json({ query, type: "video", results, count: results.length });
+    }
   } catch (error) {
-    console.error("Media search error:", error);
+    console.error("Media search error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
